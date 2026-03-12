@@ -1,16 +1,34 @@
+use clap::Parser;
 use std::collections::HashMap;
 use std::error::Error;
 use std::process::Command;
 
+#[derive(Parser, Debug)]
+#[command(version)]
+struct Args {
+    /// Only consider commits more recent than this value.
+    ///
+    /// The value is passed directly to `git log --since=...`.
+    #[arg(short, long)]
+    since: Option<String>,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let output = Command::new("git")
-        .args([
-            "log",
-            "--name-only",
-            "--pretty=format:",
-            "--diff-filter=ARM",
-        ])
-        .output()?;
+    let args = Args::parse();
+
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "log",
+        "--name-only",
+        "--pretty=format:",
+        "--diff-filter=ARM",
+    ]);
+
+    if let Some(since) = args.since.as_deref() {
+        cmd.args(["--since", since]);
+    }
+
+    let output = cmd.output()?;
 
     if !output.status.success() {
         return Err(format!(
