@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::process::Command;
 
-pub fn parse_git_log(since: Option<&str>) -> Result<Vec<(String, usize)>, Box<dyn Error>> {
+/// Parses `git log --name-status` output and compute per-file churn. Ignores files that were deleted.
+pub fn parse_git_log(since: Option<&str>) -> Result<HashMap<String, usize>, Box<dyn Error>> {
     let mut cmd = Command::new("git");
     cmd.args([
         "log",
@@ -27,8 +28,7 @@ pub fn parse_git_log(since: Option<&str>) -> Result<Vec<(String, usize)>, Box<dy
     Ok(parse_stdout(&stdout))
 }
 
-// Parses `git log --name-status` output and compute per-file churn. Ignores files that were deleted.
-fn parse_stdout(stdout: &str) -> Vec<(String, usize)> {
+fn parse_stdout(stdout: &str) -> HashMap<String, usize> {
     let mut churn: HashMap<String, usize> = HashMap::new();
 
     for line in stdout.lines().map(str::trim) {
@@ -69,7 +69,5 @@ fn parse_stdout(stdout: &str) -> Vec<(String, usize)> {
         }
     }
 
-    let mut result: Vec<_> = churn.into_iter().collect();
-    result.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    result
+    churn
 }
