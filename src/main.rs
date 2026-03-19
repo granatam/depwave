@@ -24,10 +24,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         None => bazel::find_workspace_root()?,
     };
 
-    let churn_map = file_churn::parse_git_log(args.since.as_deref())?;
+    let file_churn = file_churn::parse_git_log(args.since.as_deref())?;
+    if file_churn.malformed_lines > 0 {
+        eprintln!(
+            "warning: skipped {} malformed or unknown git --name-status lines",
+            file_churn.malformed_lines
+        );
+    }
 
     // Filter out non-target files.
-    let path_to_label = bazel::query_paths(&workspace, churn_map.keys())?;
+    let path_to_label = bazel::query_paths(&workspace, file_churn.churn.keys())?;
 
     let mut rows: Vec<_> = path_to_label
         .iter()
@@ -35,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             (
                 label.as_str(),
                 path.as_str(),
-                churn_map.get(path).copied().unwrap_or(0),
+                file_churn.churn.get(path).copied().unwrap_or(0),
             )
         })
         .collect();
