@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error;
+use std::path::Path;
 use std::process::Command;
 
 pub struct FileChurn {
@@ -10,9 +11,12 @@ pub struct FileChurn {
 /// Computes file churn (file touch frequency) from `git log --name-status`.
 ///
 /// Deleted files are intentionally excluded from the result.
-pub fn parse_git_log(since: Option<&str>) -> Result<FileChurn, Box<dyn Error>> {
+pub fn parse_git_log(
+    workspace_root: &Path,
+    since: Option<&str>,
+) -> Result<FileChurn, Box<dyn Error>> {
     let mut cmd = Command::new("git");
-    cmd.args([
+    cmd.current_dir(workspace_root).args([
         "log",
         "--reverse",
         "-M",

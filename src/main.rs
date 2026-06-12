@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         None => bazel::find_workspace_root()?,
     };
 
-    let file_churn = file_churn::parse_git_log(args.since.as_deref())?;
+    let file_churn = file_churn::parse_git_log(&workspace, args.since.as_deref())?;
     if file_churn.malformed_lines > 0 {
         eprintln!(
             "warning: skipped {} malformed or unknown git --name-status lines",
