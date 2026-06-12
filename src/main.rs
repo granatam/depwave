@@ -14,6 +14,10 @@ struct Args {
     /// Bazel workspace root (default: auto-detect from current directory).
     #[arg(long)]
     workspace: Option<PathBuf>,
+
+    /// Bazel universe used for reverse dependency analysis.
+    #[arg(long, default_value = "//...")]
+    universe: String,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -36,7 +40,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let path_to_label = bazel::query_paths(&workspace, file_churn.churn.keys())?;
 
     // Count transitive reverse dependencies for each resolved label.
-    let rdeps_counts = bazel::query_rdeps_counts(&workspace, path_to_label.values())?;
+    let rdeps_counts =
+        bazel::query_rdeps_counts(&workspace, &args.universe, path_to_label.values())?;
 
     let mut rows: Vec<_> = path_to_label
         .iter()

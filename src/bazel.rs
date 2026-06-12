@@ -71,8 +71,14 @@ pub fn query_paths(
 /// that transitively depend on it.
 pub fn query_rdeps_counts(
     workspace_root: &Path,
+    universe: &str,
     labels: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Result<HashMap<String, usize>, Box<dyn Error>> {
+    let universe = universe.trim();
+    if universe.is_empty() {
+        return Err("`--universe` value should not be empty".into());
+    }
+
     let labels: Vec<String> = labels
         .into_iter()
         .map(|l| l.as_ref().trim().to_owned())
@@ -83,7 +89,7 @@ pub fn query_rdeps_counts(
         return Ok(HashMap::new());
     }
 
-    let query = format!("rdeps(//..., set({}))", labels.join(" "));
+    let query = format!("rdeps({}, set({}))", universe, labels.join(" "));
     let mut query_file = tempfile::NamedTempFile::new()?;
     query_file.write_all(query.as_bytes())?;
     query_file.flush()?;
