@@ -35,14 +35,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Filter out non-target files.
     let path_to_label = bazel::query_paths(&workspace, file_churn.churn.keys())?;
 
+    // Count transitive reverse dependencies for each resolved label.
+    let rdeps_counts = bazel::query_rdeps_counts(&workspace, path_to_label.values())?;
+
     let mut rows: Vec<_> = path_to_label
         .iter()
-        .map(|(path, label)| {
-            (
+        .filter_map(|(path, label)| {
+            let rdeps = rdeps_counts.get(label.as_str()).copied()?;
+            Some((
                 label.as_str(),
                 path.as_str(),
                 file_churn.churn.get(path).copied().unwrap_or(0),
-            )
+                rdeps,
+            ))
         })
         .collect();
     rows.sort_by(|a, b| {
@@ -51,9 +56,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             .then_with(|| a.1.cmp(b.1))
     });
 
-    println!("label\tpath\tfrequency");
-    for (label, path, frequency) in rows {
-        println!("{label}\t{path}\t{frequency}");
+    println!("label\tpath\tfrequency\trdeps");
+    for (label, path, frequency, rdeps) in rows {
+        println!("{label}\t{path}\t{frequency}\t{rdeps}");
     }
 
     Ok(())

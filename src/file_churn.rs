@@ -64,9 +64,7 @@ fn parse_name_status_stdout(stdout: &str) -> FileChurn {
                 }
             }
             'C' => {
-                if let Some((_, new_path)) =
-                    take_path_pair(&mut fields, &mut malformed_lines)
-                {
+                if let Some((_, new_path)) = take_path_pair(&mut fields, &mut malformed_lines) {
                     *churn.entry(new_path.to_string()).or_default() += 1;
                 }
             }
