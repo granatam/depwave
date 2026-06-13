@@ -147,16 +147,11 @@ fn parse_predecessors_from_dot(dot: &str) -> Result<HashMap<String, Vec<String>>
         .map_err(|e| format!("failed to parse bazel --output=graph DOT: {e:?}"))?;
     let graph = canonical::Graph::from(ast_graph);
 
-    // Bazel can collapse several labels into one DOT node separated by '\n'.
     for edge in graph.edges.set {
-        let from_labels = split_dot_node_labels(edge.from.as_str());
-        let to_labels = split_dot_node_labels(edge.to.as_str());
-        for to_label in to_labels {
-            predecessors
-                .entry(to_label)
-                .or_default()
-                .extend(from_labels.iter().cloned());
-        }
+        let from = strip_dot_quotes(edge.from.as_str()).to_owned();
+        let to = strip_dot_quotes(edge.to.as_str()).to_owned();
+
+        predecessors.entry(to).or_default().push(from);
     }
 
     Ok(predecessors)
@@ -197,18 +192,6 @@ fn count_transitive_rdeps<'a>(
     }
 
     visited.len().saturating_sub(1)
-}
-
-fn split_dot_node_labels(node: &str) -> Vec<String> {
-    // Depending on DOT parsing, collapsed node IDs may contain either actual
-    // newline characters or the escaped sequence "\n".
-    strip_dot_quotes(node)
-        .replace("\\n", "\n")
-        .lines()
-        .map(str::trim)
-        .filter(|label| !label.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
 }
 
 /// Strips a single layer of surrounding double-quote characters from a DOT node identifier string.
