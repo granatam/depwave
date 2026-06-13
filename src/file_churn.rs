@@ -122,3 +122,63 @@ fn take_path_pair<'a>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_name_status_counts_added_and_modified_files() {
+        let parsed = parse_name_status_stdout("A\tsrc/a.rs\nM\tsrc/a.rs\nM\tsrc/b.rs\n");
+
+        assert_eq!(parsed.churn.get("src/a.rs"), Some(&2));
+        assert_eq!(parsed.churn.get("src/b.rs"), Some(&1));
+        assert_eq!(parsed.malformed_lines, 0);
+    }
+
+    #[test]
+    fn parse_name_status_rename_carries_previous_churn_to_new_path() {
+        let parsed = parse_name_status_stdout(
+            "A\tsrc/old.rs\nM\tsrc/old.rs\nR100\tsrc/old.rs\tsrc/new.rs\nM\tsrc/new.rs\n",
+        );
+
+        assert_eq!(parsed.churn.get("src/old.rs"), None);
+        assert_eq!(parsed.churn.get("src/new.rs"), Some(&4));
+        assert_eq!(parsed.malformed_lines, 0);
+    }
+
+    #[test]
+    fn parse_name_status_copy_counts_new_path_only() {
+        let parsed =
+            parse_name_status_stdout("A\tsrc/original.rs\nC100\tsrc/original.rs\tsrc/copy.rs\n");
+
+        assert_eq!(parsed.churn.get("src/original.rs"), Some(&1));
+        assert_eq!(parsed.churn.get("src/copy.rs"), Some(&1));
+        assert_eq!(parsed.malformed_lines, 0);
+    }
+
+    #[test]
+    fn parse_name_status_delete_removes_file_from_current_result() {
+        let parsed =
+            parse_name_status_stdout("A\tsrc/deleted.rs\nM\tsrc/deleted.rs\nD\tsrc/deleted.rs\n");
+
+        assert_eq!(parsed.churn.get("src/deleted.rs"), None);
+        assert_eq!(parsed.malformed_lines, 0);
+    }
+
+    #[test]
+    fn parse_name_status_reports_malformed_and_unknown_lines() {
+        let parsed = parse_name_status_stdout("M\nX\tsrc/weird.rs\nA\tsrc/ok.rs\n");
+
+        assert_eq!(parsed.churn.get("src/ok.rs"), Some(&1));
+        assert_eq!(parsed.malformed_lines, 2);
+    }
+
+    #[test]
+    fn parse_name_status_ignores_empty_lines() {
+        let parsed = parse_name_status_stdout("\n\nA\tsrc/a.rs\n\n");
+
+        assert_eq!(parsed.churn.get("src/a.rs"), Some(&1));
+        assert_eq!(parsed.malformed_lines, 0);
+    }
+}

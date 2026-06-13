@@ -221,3 +221,240 @@ fn parse_location_line(line: &str, workspace_root: &Path) -> Option<(String, Str
 
     Some((rel, label))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    fn sorted(mut values: Vec<String>) -> Vec<String> {
+        values.sort();
+        values
+    }
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn strip_dot_quotes_removes_surrounding_quotes() {
+        assert_eq!(strip_dot_quotes(r#""//pkg:target""#), "//pkg:target");
+    }
+
+    #[test]
+    fn strip_dot_quotes_leaves_unquoted_string_unchanged() {
+        assert_eq!(strip_dot_quotes("//pkg:target"), "//pkg:target");
+    }
+
+    #[test]
+    fn parse_predecessors_from_dot_returns_empty_map_for_empty_dot() {
+        let predecessors = parse_predecessors_from_dot("").unwrap();
+
+        assert!(predecessors.is_empty());
+    }
+
+    #[test]
+    fn parse_predecessors_from_dot_returns_error_for_invalid_dot() {
+        let err = parse_predecessors_from_dot("not dot").unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("failed to parse bazel --output=graph DOT"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_predecessors_from_dot_parses_unfactored_graph() {
+        let dot = r#"
+            digraph mygraph {
+              "//app:bin" -> "//lib:core"
+              "//test:unit" -> "//lib:core"
+              "//lib:core" -> "//base:base"
+            }
+        "#;
+
+        let predecessors = parse_predecessors_from_dot(dot).unwrap();
+
+        assert_eq!(
+            sorted(predecessors.get("//lib:core").unwrap().clone()),
+            sorted(strings(&["//app:bin", "//test:unit"]))
+        );
+
+        assert_eq!(
+            predecessors.get("//base:base").unwrap(),
+            &strings(&["//lib:core"])
+        );
+    }
+
+    #[test]
+    fn parse_predecessors_from_dot_keeps_factored_source_node_as_single_node() {
+        let dot = r#"
+            digraph mygraph {
+              "//app:bin\n//test:unit" -> "//lib:core"
+            }
+        "#;
+
+        let predecessors = parse_predecessors_from_dot(dot).unwrap();
+
+        let froms = predecessors.get("//lib:core").unwrap();
+
+        assert_eq!(froms.len(), 1);
+
+        assert!(
+            froms[0].contains("//app:bin"),
+            "factored source node should contain //app:bin, got {:?}",
+            froms[0]
+        );
+
+        assert!(
+            froms[0].contains("//test:unit"),
+            "factored source node should contain //test:unit, got {:?}",
+            froms[0]
+        );
+    }
+
+    #[test]
+    fn parse_predecessors_from_dot_keeps_factored_destination_node_as_single_node() {
+        let dot = r#"
+            digraph mygraph {
+              "//app:bin" -> "//lib:core\n//lib:util"
+            }
+        "#;
+
+        let predecessors = parse_predecessors_from_dot(dot).unwrap();
+
+        assert_eq!(predecessors.len(), 1);
+
+        let factored_destination = predecessors.keys().next().unwrap();
+
+        assert!(
+            factored_destination.contains("//lib:core"),
+            "factored destination node should contain //lib:core, got {factored_destination:?}"
+        );
+
+        assert!(
+            factored_destination.contains("//lib:util"),
+            "factored destination node should contain //lib:util, got {factored_destination:?}"
+        );
+
+        assert_eq!(
+            predecessors.get(factored_destination).unwrap(),
+            &strings(&["//app:bin"])
+        );
+    }
+
+    #[test]
+    fn count_transitive_rdeps_walks_predecessors() {
+        let predecessors = HashMap::from([
+            (
+                "//lib:core".to_string(),
+                strings(&["//app:bin", "//test:unit"]),
+            ),
+            ("//base:base".to_string(), strings(&["//lib:core"])),
+        ]);
+
+        assert_eq!(count_transitive_rdeps("//base:base", &predecessors), 3);
+        assert_eq!(count_transitive_rdeps("//lib:core", &predecessors), 2);
+        assert_eq!(count_transitive_rdeps("//app:bin", &predecessors), 0);
+    }
+
+    #[test]
+    fn count_transitive_rdeps_handles_cycles_without_infinite_loop() {
+        let predecessors = HashMap::from([
+            ("//a:a".to_string(), strings(&["//b:b"])),
+            ("//b:b".to_string(), strings(&["//a:a", "//c:c"])),
+        ]);
+
+        assert_eq!(count_transitive_rdeps("//a:a", &predecessors), 2);
+    }
+
+    #[test]
+    fn collect_appeared_labels_includes_sources_and_destinations() {
+        let predecessors = HashMap::from([
+            (
+                "//lib:core".to_string(),
+                strings(&["//app:bin", "//test:unit"]),
+            ),
+            ("//base:base".to_string(), strings(&["//lib:core"])),
+        ]);
+
+        let appeared = collect_appeared_labels(&predecessors);
+
+        assert!(appeared.contains("//app:bin"));
+        assert!(appeared.contains("//test:unit"));
+        assert!(appeared.contains("//lib:core"));
+        assert!(appeared.contains("//base:base"));
+    }
+
+    #[test]
+    fn factored_graph_does_not_make_individual_labels_appear() {
+        let dot = r#"
+            digraph mygraph {
+              "//app:bin\n//test:unit" -> "//lib:core"
+              "//lib:core" -> "//base:base"
+            }
+        "#;
+
+        let predecessors = parse_predecessors_from_dot(dot).unwrap();
+        let appeared = collect_appeared_labels(&predecessors);
+
+        assert!(!appeared.contains("//app:bin"));
+        assert!(!appeared.contains("//test:unit"));
+
+        assert!(appeared.contains("//lib:core"));
+        assert!(appeared.contains("//base:base"));
+
+        assert_eq!(count_transitive_rdeps("//base:base", &predecessors), 2);
+        assert_eq!(count_transitive_rdeps("//lib:core", &predecessors), 1);
+        assert_eq!(count_transitive_rdeps("//app:bin", &predecessors), 0);
+        assert_eq!(count_transitive_rdeps("//test:unit", &predecessors), 0);
+    }
+
+    #[test]
+    fn parse_location_line_returns_workspace_relative_path_and_label() {
+        let workspace_root = Path::new("/repo");
+        let line = "/repo/src/lib/foo.rs:12:34: source file //src/lib:foo.rs";
+
+        assert_eq!(
+            parse_location_line(line, workspace_root),
+            Some(("src/lib/foo.rs".to_string(), "//src/lib:foo.rs".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_location_line_keeps_path_when_outside_workspace() {
+        let workspace_root = Path::new("/repo");
+        let line = "/tmp/generated/foo.rs:12:34: source file @ext//pkg:foo.rs";
+
+        assert_eq!(
+            parse_location_line(line, workspace_root),
+            Some((
+                "/tmp/generated/foo.rs".to_string(),
+                "@ext//pkg:foo.rs".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_location_line_handles_colons_inside_path() {
+        let workspace_root = Path::new("C:/repo");
+        let line = "C:/repo/src/lib/foo.rs:12:34: source file //src/lib:foo.rs";
+
+        assert_eq!(
+            parse_location_line(line, workspace_root),
+            Some(("src/lib/foo.rs".to_string(), "//src/lib:foo.rs".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_location_line_returns_none_for_malformed_line() {
+        let workspace_root = Path::new("/repo");
+
+        assert_eq!(
+            parse_location_line("not a bazel location line", workspace_root),
+            None
+        );
+    }
+}
