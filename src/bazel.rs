@@ -100,8 +100,15 @@ pub fn query_rdeps_counts(
             "--query_file",
             query_file.path().to_str().unwrap(),
             "--output=graph",
+            // Bazel graph output is factored by default and intended for
+            // visualization. Depwave needs an unfactored graph so every DOT
+            // node maps to real labels.
+            "--nograph:factored",
+            // Prevent Bazel from truncating long DOT node labels.
+            "--graph:node_limit=-1",
             "--noimplicit_deps",
             "--notool_deps",
+            "--order_output=full",
         ])
         .current_dir(workspace_root)
         .output()?;
