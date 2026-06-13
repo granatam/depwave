@@ -45,14 +45,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut rows: Vec<_> = path_to_label
         .iter()
-        .filter_map(|(path, label)| {
+        .map(|(path, label)| {
             let rdeps = rdeps_counts.get(label.as_str()).copied().unwrap_or(0);
-            Some((
+            (
                 label.as_str(),
                 path.as_str(),
                 file_churn.churn.get(path).copied().unwrap_or(0),
                 rdeps,
-            ))
+            )
         })
         .collect();
     rows.sort_by(|a, b| {
