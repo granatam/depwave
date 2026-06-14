@@ -149,3 +149,54 @@ pub fn count_status(entries: &[TargetImpact], status: AnalysisStatus) -> u64 {
         .filter(|entry| entry.status == status)
         .count() as u64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_entries_for_analyzed_unresolved_and_unsupported_files() {
+        let file_churn = FileChurn {
+            churn: HashMap::from([
+                ("src/lib.rs".to_string(), 3),
+                ("README.md".to_string(), 2),
+                ("src/BUILD.bazel".to_string(), 4),
+                ("tools/defs.bzl".to_string(), 5),
+                ("MODULE.bazel".to_string(), 1),
+            ]),
+            malformed_lines: 0,
+        };
+
+        let path_to_label = HashMap::from([("src/lib.rs".to_string(), "//src:lib.rs".to_string())]);
+
+        let dependents = HashMap::from([("//src:lib.rs".to_string(), 10)]);
+
+        let entries = build_report_entries(&file_churn, &path_to_label, &dependents);
+
+        assert_eq!(count_status(&entries, AnalysisStatus::Analyzed), 1);
+        assert_eq!(count_status(&entries, AnalysisStatus::Unresolved), 1);
+        assert_eq!(count_status(&entries, AnalysisStatus::Unsupported), 3);
+
+        let analyzed = entries
+            .iter()
+            .find(|entry| entry.source_path == "src/lib.rs")
+            .unwrap();
+
+        assert_eq!(analyzed.status, AnalysisStatus::Analyzed);
+        assert_eq!(analyzed.kind, FileKind::Source);
+        assert_eq!(analyzed.target_label.as_deref(), Some("//src:lib.rs"));
+        assert_eq!(analyzed.churn, 3);
+        assert_eq!(analyzed.dependents, 10);
+        assert_eq!(analyzed.impact_score, 30);
+
+        let build_file = entries
+            .iter()
+            .find(|entry| entry.source_path == "src/BUILD.bazel")
+            .unwrap();
+
+        assert_eq!(build_file.kind, FileKind::BuildFile);
+        assert_eq!(build_file.status, AnalysisStatus::Unsupported);
+        assert_eq!(build_file.target_label, None);
+        assert_eq!(build_file.impact_score, 0);
+    }
+}
