@@ -8,7 +8,7 @@ use std::{error::Error, path::PathBuf};
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
-    /// Only consider commits after this (passed to `git log --since=...`).
+    /// Only consider commits after specified date (passed to `git log --since=...`).
     #[arg(short, long)]
     since: Option<String>,
 
