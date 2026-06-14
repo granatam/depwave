@@ -19,6 +19,9 @@ struct Args {
     /// Bazel universe used for reverse dependency analysis.
     #[arg(long, default_value = "//...")]
     universe: String,
+
+    #[arg(long)]
+    limit: Option<usize>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -44,7 +47,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dependents_map =
         bazel::query_rdeps_counts(&workspace, &args.universe, path_to_label.values())?;
 
-    let entries = report::build_report_entries(&file_churn, &path_to_label, &dependents_map);
+    let mut entries = report::build_report_entries(&file_churn, &path_to_label, &dependents_map);
+    if let Some(limit) = args.limit {
+        entries.truncate(limit);
+    }
+
     let report = report::Report {
         workspace: workspace.display().to_string(),
         universe: args.universe,
