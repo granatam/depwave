@@ -13,31 +13,31 @@ pub struct ReportConfig {
 
 #[derive(Debug, Serialize)]
 pub struct Report {
-    pub workspace: String,
-    pub universe: String,
-    pub since: Option<String>,
-    pub total_churned_files: u64,
-    pub analyzed_files: u64,
-    pub unresolved_files: u64,
-    pub unsupported_files: u64,
-    pub malformed_git_lines: u64,
-    pub entries: Vec<TargetImpact>,
+    workspace: String,
+    universe: String,
+    since: Option<String>,
+    total_churned_files: u64,
+    analyzed_files: u64,
+    unresolved_files: u64,
+    unsupported_files: u64,
+    malformed_git_lines: u64,
+    entries: Vec<TargetImpact>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct TargetImpact {
-    pub source_path: String,
-    pub kind: FileKind,
-    pub status: AnalysisStatus,
+struct TargetImpact {
+    source_path: String,
+    kind: FileKind,
+    status: AnalysisStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_label: Option<String>,
-    pub churn: u64,
-    pub dependents: u64,
-    pub impact_score: u64,
+    target_label: Option<String>,
+    churn: u64,
+    dependents: u64,
+    impact_score: u64,
 }
 
 impl TargetImpact {
-    pub fn cmp_by_impact(a: &Self, b: &Self) -> std::cmp::Ordering {
+    fn cmp_by_impact(a: &Self, b: &Self) -> std::cmp::Ordering {
         b.impact_score
             .cmp(&a.impact_score)
             .then_with(|| b.dependents.cmp(&a.dependents))
@@ -77,7 +77,7 @@ pub fn build_report(
     }
 }
 
-pub fn build_report_entries(
+fn build_report_entries(
     file_churn: &FileChurn,
     path_to_label: &HashMap<String, String>,
     dependents: &HashMap<String, u64>,
@@ -143,7 +143,7 @@ fn unsupported_entry(path: &str, kind: FileKind, churn: u64) -> TargetImpact {
     }
 }
 
-pub fn count_status(entries: &[TargetImpact], status: AnalysisStatus) -> u64 {
+fn count_status(entries: &[TargetImpact], status: AnalysisStatus) -> u64 {
     entries
         .iter()
         .filter(|entry| entry.status == status)
