@@ -1,5 +1,6 @@
 mod bazel;
 mod file_churn;
+mod files;
 mod report;
 
 use clap::Parser;

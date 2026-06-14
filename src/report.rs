@@ -1,4 +1,5 @@
 use crate::file_churn::FileChurn;
+use crate::files::{AnalysisStatus, FileKind, classify_file};
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -15,7 +16,10 @@ pub struct Report {
 #[derive(Debug, Serialize)]
 pub struct TargetImpact {
     pub source_path: String,
-    pub target_label: String,
+    pub kind: FileKind,
+    pub status: AnalysisStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_label: Option<String>,
     pub churn: u64,
     pub dependents: u64,
     pub impact_score: u64,
@@ -37,23 +41,63 @@ pub fn build_report_entries(
     path_to_label: &HashMap<String, String>,
     dependents: &HashMap<String, u64>,
 ) -> Vec<TargetImpact> {
-    let mut entries: Vec<_> = path_to_label
+    let mut entries: Vec<_> = file_churn
+        .churn
         .iter()
-        .map(|(path, label)| {
-            let churn = file_churn.churn.get(path).copied().unwrap_or(0);
-            let dependents = dependents.get(label.as_str()).copied().unwrap_or(0);
-
-            TargetImpact {
-                source_path: path.clone(),
-                target_label: label.clone(),
-                churn,
-                dependents,
-                impact_score: churn.saturating_mul(dependents),
-            }
-        })
+        .map(|(path, churn)| build_entry(path, *churn, path_to_label, dependents))
         .collect();
 
     entries.sort_by(TargetImpact::cmp_by_impact);
 
     entries
+}
+
+fn build_entry(
+    path: &str,
+    churn: u64,
+    path_to_label: &HashMap<String, String>,
+    dependents: &HashMap<String, u64>,
+) -> TargetImpact {
+    let kind = classify_file(path);
+    match kind {
+        FileKind::Source => {
+            if let Some(label) = path_to_label.get(path) {
+                let dependents = dependents.get(label.as_str()).copied().unwrap_or(0);
+                TargetImpact {
+                    source_path: path.to_string(),
+                    kind,
+                    status: AnalysisStatus::Analyzed,
+                    target_label: Some(label.clone()),
+                    churn,
+                    dependents,
+                    impact_score: churn.saturating_mul(dependents),
+                }
+            } else {
+                TargetImpact {
+                    source_path: path.to_string(),
+                    kind,
+                    status: AnalysisStatus::Unresolved,
+                    target_label: None,
+                    churn,
+                    dependents: 0,
+                    impact_score: 0,
+                }
+            }
+        }
+        FileKind::BuildFile => unsupported_entry(path, kind, churn),
+        FileKind::BzlFile => unsupported_entry(path, kind, churn),
+        FileKind::WorkspaceFile => unsupported_entry(path, kind, churn),
+    }
+}
+
+fn unsupported_entry(path: &str, kind: FileKind, churn: u64) -> TargetImpact {
+    TargetImpact {
+        source_path: path.to_string(),
+        kind,
+        status: AnalysisStatus::Unsupported,
+        target_label: None,
+        churn,
+        dependents: 0,
+        impact_score: 0,
+    }
 }
