@@ -1,5 +1,8 @@
 # Depwave
 
+A change to a highly depended-on file can propagate through the build graph
+like a **wave**, affecting many targets, tests, and CI jobs.
+
 Depwave is a change-impact analysis CLI tool for Bazel repositories.
 
 It helps identify files and Bazel targets that are risky to change because they combine:
