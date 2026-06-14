@@ -55,8 +55,7 @@ pub fn query_paths(
         .output()?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("`bazel query --output=location` failed: {}", stderr.trim()).into());
+        eprintln!("bazel query --output=location: some of the changed files are not bazel targets");
     }
 
     let stdout = String::from_utf8(output.stdout)?;
