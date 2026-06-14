@@ -55,7 +55,7 @@ pub fn query_paths(
         .output()?;
 
     if !output.status.success() {
-        eprintln!("bazel query --output=location: some of the changed files are not bazel targets");
+        eprintln!("bazel query --output=location: some changed files could not be resolved as Bazel targets");
     }
 
     let stdout = String::from_utf8(output.stdout)?;
