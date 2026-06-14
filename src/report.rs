@@ -4,11 +4,22 @@ use crate::files::{AnalysisStatus, FileKind, classify_file};
 use serde::Serialize;
 use std::collections::HashMap;
 
+pub struct ReportConfig {
+    pub workspace: String,
+    pub universe: String,
+    pub since: Option<String>,
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Report {
     pub workspace: String,
     pub universe: String,
     pub since: Option<String>,
+    pub total_churned_files: u64,
+    pub analyzed_files: u64,
+    pub unresolved_files: u64,
+    pub unsupported_files: u64,
     pub malformed_git_lines: u64,
     pub entries: Vec<TargetImpact>,
 }
@@ -33,6 +44,36 @@ impl TargetImpact {
             .then_with(|| b.churn.cmp(&a.churn))
             .then_with(|| a.source_path.cmp(&b.source_path))
             .then_with(|| a.target_label.cmp(&b.target_label))
+    }
+}
+
+pub fn build_report(
+    config: ReportConfig,
+    file_churn: &FileChurn,
+    path_to_label: &HashMap<String, String>,
+    dependents: &HashMap<String, u64>,
+) -> Report {
+    let mut entries = build_report_entries(file_churn, path_to_label, dependents);
+
+    let total_churned_files = file_churn.churn.len() as u64;
+    let analyzed_files = count_status(&entries, AnalysisStatus::Analyzed);
+    let unresolved_files = count_status(&entries, AnalysisStatus::Unresolved);
+    let unsupported_files = count_status(&entries, AnalysisStatus::Unsupported);
+
+    if let Some(limit) = config.limit {
+        entries.truncate(limit);
+    }
+
+    Report {
+        workspace: config.workspace,
+        universe: config.universe,
+        since: config.since,
+        malformed_git_lines: file_churn.malformed_lines,
+        total_churned_files,
+        analyzed_files,
+        unresolved_files,
+        unsupported_files,
+        entries,
     }
 }
 
@@ -100,4 +141,11 @@ fn unsupported_entry(path: &str, kind: FileKind, churn: u64) -> TargetImpact {
         dependents: 0,
         impact_score: 0,
     }
+}
+
+pub fn count_status(entries: &[TargetImpact], status: AnalysisStatus) -> u64 {
+    entries
+        .iter()
+        .filter(|entry| entry.status == status)
+        .count() as u64
 }

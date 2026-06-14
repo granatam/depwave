@@ -21,6 +21,7 @@ struct Args {
     #[arg(long, default_value = "//...")]
     universe: String,
 
+    /// Select only top N entries
     #[arg(long)]
     limit: Option<usize>,
 }
@@ -44,22 +45,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Filter out non-target files.
     let path_to_label = bazel::query_paths(&workspace, file_churn.churn.keys())?;
 
-    // Count transitive reverse dependencies for each resolved label.
+    // Count transitive dependents for each resolved label.
     let dependents_map =
         bazel::query_rdeps_counts(&workspace, &args.universe, path_to_label.values())?;
 
-    let mut entries = report::build_report_entries(&file_churn, &path_to_label, &dependents_map);
-    if let Some(limit) = args.limit {
-        entries.truncate(limit);
-    }
-
-    let report = report::Report {
-        workspace: workspace.display().to_string(),
-        universe: args.universe,
-        since: args.since,
-        malformed_git_lines: file_churn.malformed_lines,
-        entries,
-    };
+    let report = report::build_report(
+        report::ReportConfig {
+            workspace: workspace.display().to_string(),
+            universe: args.universe,
+            since: args.since,
+            limit: args.limit,
+        },
+        &file_churn,
+        &path_to_label,
+        &dependents_map,
+    );
 
     println!("{}", serde_json::to_string_pretty(&report)?);
 
