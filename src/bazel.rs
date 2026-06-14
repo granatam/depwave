@@ -42,10 +42,10 @@ pub fn query_paths(
     query_file.flush()?;
 
     let output = Command::new("bazel")
+        .arg("query")
+        .arg("--query_file")
+        .arg(query_file.path())
         .args([
-            "query",
-            "--query_file",
-            query_file.path().to_str().unwrap(),
             "--output=location",
             "--noimplicit_deps",
             "--notool_deps",
@@ -53,6 +53,11 @@ pub fn query_paths(
         ])
         .current_dir(workspace_root)
         .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("`bazel query --output=location` failed: {}", stderr.trim()).into());
+    }
 
     let stdout = String::from_utf8(output.stdout)?;
     let path_to_label = stdout
@@ -64,16 +69,12 @@ pub fn query_paths(
 }
 
 /// Counts the transitive reverse dependencies of each label via a single
-/// `bazel query rdeps(//..., set(...)) --output=graph` call.
-///
-/// The DOT graph edges are "dependant -> dependency", so for each label we
-/// traverse the graph backwards (following predecessors) to find all nodes
-/// that transitively depend on it.
+/// `bazel query` call.
 pub fn query_rdeps_counts(
     workspace_root: &Path,
     universe: &str,
     labels: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<HashMap<String, usize>, Box<dyn Error>> {
+) -> Result<HashMap<String, u64>, Box<dyn Error>> {
     let universe = universe.trim();
     if universe.is_empty() {
         return Err("`--universe` value should not be empty".into());
@@ -95,10 +96,10 @@ pub fn query_rdeps_counts(
     query_file.flush()?;
 
     let output = Command::new("bazel")
+        .arg("query")
+        .arg("--query_file")
+        .arg(query_file.path())
         .args([
-            "query",
-            "--query_file",
-            query_file.path().to_str().unwrap(),
             "--output=graph",
             // Bazel graph output is factored by default and intended for
             // visualization. Depwave needs an unfactored graph so every DOT
@@ -169,7 +170,7 @@ fn collect_appeared_labels(predecessors: &HashMap<String, Vec<String>>) -> HashS
 fn count_transitive_rdeps<'a>(
     label: &'a str,
     predecessors: &'a HashMap<String, Vec<String>>,
-) -> usize {
+) -> u64 {
     let mut visited: HashSet<&str> = HashSet::from([label]);
     let mut queue: VecDeque<&str> = VecDeque::new();
 
@@ -191,7 +192,9 @@ fn count_transitive_rdeps<'a>(
         }
     }
 
-    visited.len().saturating_sub(1)
+    u64::try_from(visited.len())
+        .unwrap_or(u64::MAX)
+        .saturating_sub(1)
 }
 
 /// Strips a single layer of surrounding double-quote characters from a DOT node identifier string.

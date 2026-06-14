@@ -44,30 +44,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dependents_map =
         bazel::query_rdeps_counts(&workspace, &args.universe, path_to_label.values())?;
 
-    let mut entries: Vec<_> = path_to_label
-        .iter()
-        .map(|(path, label)| {
-            let dependents = dependents_map.get(label.as_str()).copied().unwrap_or(0);
-            let churn = file_churn.churn.get(path).copied().unwrap_or(0);
-            report::TargetImpact {
-                source_path: path.clone(),
-                target_label: label.clone(),
-                churn,
-                dependents,
-                impact_score: churn * dependents,
-            }
-        })
-        .collect();
-
-    entries.sort_by(|a, b| {
-        b.impact_score
-            .cmp(&a.impact_score)
-            .then_with(|| b.dependents.cmp(&a.dependents))
-            .then_with(|| b.churn.cmp(&a.churn))
-            .then_with(|| a.source_path.cmp(&b.source_path))
-            .then_with(|| a.target_label.cmp(&b.target_label))
-    });
-
+    let entries = report::build_report_entries(&file_churn, &path_to_label, &dependents_map);
     let report = report::Report {
         workspace: workspace.display().to_string(),
         universe: args.universe,

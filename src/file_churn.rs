@@ -4,8 +4,8 @@ use std::path::Path;
 use std::process::Command;
 
 pub struct FileChurn {
-    pub churn: HashMap<String, usize>,
-    pub malformed_lines: usize,
+    pub churn: HashMap<String, u64>,
+    pub malformed_lines: u64,
 }
 
 /// Computes file churn (file touch frequency) from `git log --name-status`.
@@ -44,8 +44,8 @@ pub fn parse_git_log(
 
 /// Parses `git log --name-status` stdout into file churn.
 fn parse_name_status_stdout(stdout: &str) -> FileChurn {
-    let mut churn: HashMap<String, usize> = HashMap::new();
-    let mut malformed_lines = 0usize;
+    let mut churn: HashMap<String, u64> = HashMap::new();
+    let mut malformed_lines = 0u64;
 
     for raw_line in stdout.lines() {
         if raw_line.trim().is_empty() {
@@ -99,7 +99,7 @@ fn parse_name_status_stdout(stdout: &str) -> FileChurn {
 
 fn take_path<'a>(
     fields: &mut impl Iterator<Item = &'a str>,
-    malformed_lines: &mut usize,
+    malformed_lines: &mut u64,
 ) -> Option<&'a str> {
     match fields.next() {
         Some(path) => Some(path),
@@ -112,7 +112,7 @@ fn take_path<'a>(
 
 fn take_path_pair<'a>(
     fields: &mut impl Iterator<Item = &'a str>,
-    malformed_lines: &mut usize,
+    malformed_lines: &mut u64,
 ) -> Option<(&'a str, &'a str)> {
     match (fields.next(), fields.next()) {
         (Some(first), Some(second)) => Some((first, second)),
