@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,15 +22,11 @@ pub fn find_workspace_root() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 /// Resolves paths to Bazel labels via a single `bazel query --output=location`.
-pub fn query_paths(
+pub fn resolve_paths_to_labels(
     workspace_root: &Path,
     paths: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Result<HashMap<String, String>, Box<dyn Error>> {
-    let paths: Vec<String> = paths
-        .into_iter()
-        .map(|p| p.as_ref().trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let paths = collect_unique_nonempty_strings(paths);
 
     if paths.is_empty() {
         return Ok(HashMap::new());
@@ -61,17 +57,16 @@ pub fn query_paths(
     }
 
     let stdout = String::from_utf8(output.stdout)?;
-    let path_to_label = stdout
+    let labels_by_path = stdout
         .lines()
         .filter_map(|line| parse_location_line(line, workspace_root))
         .collect();
 
-    Ok(path_to_label)
+    Ok(labels_by_path)
 }
 
-/// Counts the transitive reverse dependencies of each label via a single
-/// `bazel query` call.
-pub fn query_rdeps_counts(
+/// Counts transitive dependents of each label via a single `bazel query` call.
+pub fn count_transitive_dependents_by_label(
     workspace_root: &Path,
     universe: &str,
     labels: impl IntoIterator<Item = impl AsRef<str>>,
@@ -81,11 +76,7 @@ pub fn query_rdeps_counts(
         return Err("`--universe` value should not be empty".into());
     }
 
-    let labels: Vec<String> = labels
-        .into_iter()
-        .map(|l| l.as_ref().trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let labels = collect_unique_nonempty_strings(labels);
 
     if labels.is_empty() {
         return Ok(HashMap::new());
@@ -122,14 +113,14 @@ pub fn query_rdeps_counts(
 
     let dot = String::from_utf8(output.stdout)?;
     let predecessors = parse_predecessors_from_dot(&dot)?;
-    let appeared_labels = collect_appeared_labels(&predecessors);
+    let graph_labels = collect_graph_labels(&predecessors);
     let counts = labels
         .iter()
-        .filter(|label| appeared_labels.contains(label.as_str()))
+        .filter(|label| graph_labels.contains(label.as_str()))
         .map(|label| {
             (
                 label.clone(),
-                count_transitive_rdeps(label.as_str(), &predecessors),
+                count_transitive_dependents_for_label(label.as_str(), &predecessors),
             )
         })
         .collect();
@@ -159,16 +150,28 @@ fn parse_predecessors_from_dot(dot: &str) -> Result<HashMap<String, Vec<String>>
     Ok(predecessors)
 }
 
-fn collect_appeared_labels(predecessors: &HashMap<String, Vec<String>>) -> HashSet<String> {
-    let mut appeared = HashSet::new();
+fn collect_graph_labels(predecessors: &HashMap<String, Vec<String>>) -> HashSet<&str> {
+    let mut graph_labels = HashSet::new();
     for (to, froms) in predecessors {
-        appeared.insert(to.clone());
-        appeared.extend(froms.iter().cloned());
+        graph_labels.insert(to.as_str());
+        graph_labels.extend(froms.iter().map(String::as_str));
     }
-    appeared
+    graph_labels
 }
 
-fn count_transitive_rdeps<'a>(
+fn collect_unique_nonempty_strings(
+    values: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| value.as_ref().trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn count_transitive_dependents_for_label<'a>(
     label: &'a str,
     predecessors: &'a HashMap<String, Vec<String>>,
 ) -> u64 {
@@ -350,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn count_transitive_rdeps_walks_predecessors() {
+    fn count_transitive_dependents_for_label_walks_predecessors() {
         let predecessors = HashMap::from([
             (
                 "//lib:core".to_string(),
@@ -359,23 +362,35 @@ mod tests {
             ("//base:base".to_string(), strings(&["//lib:core"])),
         ]);
 
-        assert_eq!(count_transitive_rdeps("//base:base", &predecessors), 3);
-        assert_eq!(count_transitive_rdeps("//lib:core", &predecessors), 2);
-        assert_eq!(count_transitive_rdeps("//app:bin", &predecessors), 0);
+        assert_eq!(
+            count_transitive_dependents_for_label("//base:base", &predecessors),
+            3
+        );
+        assert_eq!(
+            count_transitive_dependents_for_label("//lib:core", &predecessors),
+            2
+        );
+        assert_eq!(
+            count_transitive_dependents_for_label("//app:bin", &predecessors),
+            0
+        );
     }
 
     #[test]
-    fn count_transitive_rdeps_handles_cycles_without_infinite_loop() {
+    fn count_transitive_dependents_for_label_handles_cycles_without_infinite_loop() {
         let predecessors = HashMap::from([
             ("//a:a".to_string(), strings(&["//b:b"])),
             ("//b:b".to_string(), strings(&["//a:a", "//c:c"])),
         ]);
 
-        assert_eq!(count_transitive_rdeps("//a:a", &predecessors), 2);
+        assert_eq!(
+            count_transitive_dependents_for_label("//a:a", &predecessors),
+            2
+        );
     }
 
     #[test]
-    fn collect_appeared_labels_includes_sources_and_destinations() {
+    fn collect_graph_labels_includes_sources_and_destinations() {
         let predecessors = HashMap::from([
             (
                 "//lib:core".to_string(),
@@ -384,12 +399,12 @@ mod tests {
             ("//base:base".to_string(), strings(&["//lib:core"])),
         ]);
 
-        let appeared = collect_appeared_labels(&predecessors);
+        let graph_labels = collect_graph_labels(&predecessors);
 
-        assert!(appeared.contains("//app:bin"));
-        assert!(appeared.contains("//test:unit"));
-        assert!(appeared.contains("//lib:core"));
-        assert!(appeared.contains("//base:base"));
+        assert!(graph_labels.contains("//app:bin"));
+        assert!(graph_labels.contains("//test:unit"));
+        assert!(graph_labels.contains("//lib:core"));
+        assert!(graph_labels.contains("//base:base"));
     }
 
     #[test]
@@ -402,18 +417,30 @@ mod tests {
         "#;
 
         let predecessors = parse_predecessors_from_dot(dot).unwrap();
-        let appeared = collect_appeared_labels(&predecessors);
+        let graph_labels = collect_graph_labels(&predecessors);
 
-        assert!(!appeared.contains("//app:bin"));
-        assert!(!appeared.contains("//test:unit"));
+        assert!(!graph_labels.contains("//app:bin"));
+        assert!(!graph_labels.contains("//test:unit"));
 
-        assert!(appeared.contains("//lib:core"));
-        assert!(appeared.contains("//base:base"));
+        assert!(graph_labels.contains("//lib:core"));
+        assert!(graph_labels.contains("//base:base"));
 
-        assert_eq!(count_transitive_rdeps("//base:base", &predecessors), 2);
-        assert_eq!(count_transitive_rdeps("//lib:core", &predecessors), 1);
-        assert_eq!(count_transitive_rdeps("//app:bin", &predecessors), 0);
-        assert_eq!(count_transitive_rdeps("//test:unit", &predecessors), 0);
+        assert_eq!(
+            count_transitive_dependents_for_label("//base:base", &predecessors),
+            2
+        );
+        assert_eq!(
+            count_transitive_dependents_for_label("//lib:core", &predecessors),
+            1
+        );
+        assert_eq!(
+            count_transitive_dependents_for_label("//app:bin", &predecessors),
+            0
+        );
+        assert_eq!(
+            count_transitive_dependents_for_label("//test:unit", &predecessors),
+            0
+        );
     }
 
     #[test]

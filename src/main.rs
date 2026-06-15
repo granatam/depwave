@@ -21,7 +21,7 @@ struct Args {
     #[arg(long)]
     workspace: Option<PathBuf>,
 
-    /// Bazel universe used for reverse dependency analysis.
+    /// Bazel universe used for dependent analysis.
     #[arg(long, default_value = "//...")]
     universe: String,
 
@@ -52,10 +52,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Filter out non-target files.
-    let path_to_label = bazel::query_paths(&workspace, churn_stats.churn.keys())?;
+    let labels_by_path = bazel::resolve_paths_to_labels(&workspace, churn_stats.churn.keys())?;
 
     // Count transitive dependents for each resolved label.
-    let dependents_map = bazel::query_rdeps_counts(&workspace, &universe, path_to_label.values())?;
+    let dependent_counts = bazel::count_transitive_dependents_by_label(
+        &workspace,
+        &universe,
+        labels_by_path.values(),
+    )?;
 
     let report = report::build_report(
         report::ReportConfig {
@@ -65,8 +69,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             limit,
         },
         &churn_stats,
-        &path_to_label,
-        &dependents_map,
+        &labels_by_path,
+        &dependent_counts,
     );
 
     let stdout = io::stdout();
