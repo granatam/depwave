@@ -4,7 +4,11 @@ mod files;
 mod report;
 
 use clap::Parser;
-use std::{error::Error, path::PathBuf};
+use std::{
+    error::Error,
+    io::{self, Write},
+    path::PathBuf,
+};
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -27,41 +31,48 @@ struct Args {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args = Args::parse();
+    let Args {
+        since,
+        workspace,
+        universe,
+        limit,
+    } = Args::parse();
 
-    let workspace = match args.workspace {
-        Some(w) => w,
+    let workspace = match workspace {
+        Some(workspace) => workspace,
         None => bazel::find_workspace_root()?,
     };
 
-    let file_churn = file_churn::parse_git_log(&workspace, args.since.as_deref())?;
-    if file_churn.malformed_lines > 0 {
+    let churn_stats = file_churn::parse_git_log(&workspace, since.as_deref())?;
+    if churn_stats.malformed_lines > 0 {
         eprintln!(
             "warning: skipped {} malformed or unknown git --name-status lines",
-            file_churn.malformed_lines
+            churn_stats.malformed_lines
         );
     }
 
     // Filter out non-target files.
-    let path_to_label = bazel::query_paths(&workspace, file_churn.churn.keys())?;
+    let path_to_label = bazel::query_paths(&workspace, churn_stats.churn.keys())?;
 
     // Count transitive dependents for each resolved label.
-    let dependents_map =
-        bazel::query_rdeps_counts(&workspace, &args.universe, path_to_label.values())?;
+    let dependents_map = bazel::query_rdeps_counts(&workspace, &universe, path_to_label.values())?;
 
     let report = report::build_report(
         report::ReportConfig {
             workspace: workspace.display().to_string(),
-            universe: args.universe,
-            since: args.since,
-            limit: args.limit,
+            universe,
+            since,
+            limit,
         },
-        &file_churn,
+        &churn_stats,
         &path_to_label,
         &dependents_map,
     );
 
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    serde_json::to_writer_pretty(&mut stdout, &report)?;
+    writeln!(stdout)?;
 
     Ok(())
 }
