@@ -3,6 +3,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tracing::{debug, warn};
 
 /// Returns the current workspace root using `bazel info workspace`.
 pub fn find_workspace_root() -> Result<PathBuf> {
@@ -63,8 +64,9 @@ pub fn resolve_paths_to_labels(
         .context("failed to run `bazel query --output=location`")?;
 
     if !output.status.success() {
-        eprintln!(
-            "bazel query --output=location: some changed files could not be resolved as Bazel targets"
+        warn!(
+            status = %output.status,
+            "bazel query --output=location returned partial results"
         );
     }
 
@@ -134,14 +136,21 @@ pub fn count_transitive_dependents_by_label(
         .context("bazel query --output=graph produced non-UTF-8 output")?;
     let predecessors = parse_predecessors_from_dot(&dot)?;
     let graph_labels = collect_graph_labels(&predecessors);
-    let counts = labels
+    debug!(
+        graph_nodes = graph_labels.len(),
+        graph_edges = predecessors.values().map(Vec::len).sum::<usize>(),
+        "parsed Bazel dependency graph"
+    );
+    let counts: HashMap<String, u64> = labels
         .iter()
-        .filter(|label| graph_labels.contains(label.as_str()))
         .map(|label| {
-            (
-                label.clone(),
-                count_transitive_dependents_for_label(label.as_str(), &predecessors),
-            )
+            let count = if graph_labels.contains(label.as_str()) {
+                count_transitive_dependents_for_label(label.as_str(), &predecessors)
+            } else {
+                0
+            };
+
+            (label.clone(), count)
         })
         .collect();
 

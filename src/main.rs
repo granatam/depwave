@@ -8,7 +8,10 @@ use clap::Parser;
 use std::{
     io::{self, Write},
     path::PathBuf,
+    time::Instant,
 };
+use tracing::{info, warn};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -31,6 +34,8 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    init_logging();
+
     let Args {
         since,
         workspace,
@@ -43,23 +48,56 @@ fn main() -> Result<()> {
         None => bazel::find_workspace_root().context("failed to find Bazel workspace root")?,
     };
 
+    info!(
+        workspace = %workspace.display(),
+        universe = %universe,
+        since = ?since,
+        ?limit,
+        "starting analysis"
+    );
+
+    let started = Instant::now();
     let churn_stats = file_churn::parse_git_log(&workspace, since.as_deref())
         .context("failed to compute git file churn")?;
+    info!(
+        churned_files = churn_stats.churn.len(),
+        malformed_lines = churn_stats.malformed_lines,
+        elapsed_ms = started.elapsed().as_millis(),
+        "computed git file churn"
+    );
     if churn_stats.malformed_lines > 0 {
-        eprintln!(
-            "warning: skipped {} malformed or unknown git --name-status lines",
-            churn_stats.malformed_lines
+        warn!(
+            malformed_lines = churn_stats.malformed_lines,
+            "skipped malformed or unknown git --name-status lines"
         );
     }
 
     // Filter out non-target files.
+    let started = Instant::now();
     let labels_by_path = bazel::resolve_paths_to_labels(&workspace, churn_stats.churn.keys())
         .context("failed to resolve changed paths to Bazel labels")?;
+    info!(
+        churned_files = churn_stats.churn.len(),
+        resolved_labels = labels_by_path.len(),
+        elapsed_ms = started.elapsed().as_millis(),
+        "resolved changed paths"
+    );
 
     // Count transitive dependents for each resolved label.
+    let started = Instant::now();
     let dependent_counts =
         bazel::count_transitive_dependents_by_label(&workspace, &universe, labels_by_path.values())
-            .context("failed to count targets transitive dependents")?;
+            .context("failed to count target transitive dependents")?;
+    let zero_dependent_targets = dependent_counts
+        .values()
+        .filter(|&&dependent_count| dependent_count == 0)
+        .count();
+    info!(
+        input_target_labels = labels_by_path.len(),
+        zero_dependent_targets,
+        elapsed_ms = started.elapsed().as_millis(),
+        "counted target transitive dependents"
+    );
 
     let report = report::build_report(
         report::ReportConfig {
@@ -79,4 +117,13 @@ fn main() -> Result<()> {
     writeln!(stdout).context("failed to finish writing JSON report")?;
 
     Ok(())
+}
+
+fn init_logging() {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_writer(io::stderr)
+        .init();
 }
