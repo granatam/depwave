@@ -1,21 +1,27 @@
+use anyhow::{Context, Result, bail};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::error::Error;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Returns the current workspace root using `bazel info workspace`.
-pub fn find_workspace_root() -> Result<PathBuf, Box<dyn Error>> {
-    let output = Command::new("bazel").args(["info", "workspace"]).output()?;
+pub fn find_workspace_root() -> Result<PathBuf> {
+    let output = Command::new("bazel")
+        .args(["info", "workspace"])
+        .output()
+        .context("failed to run `bazel info workspace`")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("bazel info workspace failed: {}", stderr.trim()).into());
+        bail!("bazel info workspace failed: {}", stderr.trim());
     }
 
-    let root = String::from_utf8(output.stdout)?.trim().to_owned();
+    let root = String::from_utf8(output.stdout)
+        .context("bazel info workspace produced non-UTF-8 output")?
+        .trim()
+        .to_owned();
     if root.is_empty() {
-        return Err("bazel info workspace produced empty output".into());
+        bail!("bazel info workspace produced empty output");
     }
 
     Ok(PathBuf::from(root))
@@ -25,7 +31,7 @@ pub fn find_workspace_root() -> Result<PathBuf, Box<dyn Error>> {
 pub fn resolve_paths_to_labels(
     workspace_root: &Path,
     paths: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<HashMap<String, String>, Box<dyn Error>> {
+) -> Result<HashMap<String, String>> {
     let paths = collect_unique_nonempty_strings(paths);
 
     if paths.is_empty() {
@@ -33,9 +39,14 @@ pub fn resolve_paths_to_labels(
     }
 
     let query = format!("set({})", paths.join(" "));
-    let mut query_file = tempfile::NamedTempFile::new()?;
-    query_file.write_all(query.as_bytes())?;
-    query_file.flush()?;
+    let mut query_file =
+        tempfile::NamedTempFile::new().context("failed to create temporary Bazel query file")?;
+    query_file
+        .write_all(query.as_bytes())
+        .context("failed to write Bazel path query file")?;
+    query_file
+        .flush()
+        .context("failed to flush Bazel path query file")?;
 
     let output = Command::new("bazel")
         .arg("query")
@@ -48,7 +59,8 @@ pub fn resolve_paths_to_labels(
             "--keep_going", // continue even if some paths are not build targets
         ])
         .current_dir(workspace_root)
-        .output()?;
+        .output()
+        .context("failed to run `bazel query --output=location`")?;
 
     if !output.status.success() {
         eprintln!(
@@ -56,7 +68,8 @@ pub fn resolve_paths_to_labels(
         );
     }
 
-    let stdout = String::from_utf8(output.stdout)?;
+    let stdout = String::from_utf8(output.stdout)
+        .context("bazel query --output=location produced non-UTF-8 output")?;
     let labels_by_path = stdout
         .lines()
         .filter_map(|line| parse_location_line(line, workspace_root))
@@ -70,10 +83,10 @@ pub fn count_transitive_dependents_by_label(
     workspace_root: &Path,
     universe: &str,
     labels: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<HashMap<String, u64>, Box<dyn Error>> {
+) -> Result<HashMap<String, u64>> {
     let universe = universe.trim();
     if universe.is_empty() {
-        return Err("`--universe` value should not be empty".into());
+        bail!("`--universe` value should not be empty");
     }
 
     let labels = collect_unique_nonempty_strings(labels);
@@ -83,9 +96,14 @@ pub fn count_transitive_dependents_by_label(
     }
 
     let query = format!("rdeps({}, set({}))", universe, labels.join(" "));
-    let mut query_file = tempfile::NamedTempFile::new()?;
-    query_file.write_all(query.as_bytes())?;
-    query_file.flush()?;
+    let mut query_file =
+        tempfile::NamedTempFile::new().context("failed to create temporary Bazel query file")?;
+    query_file
+        .write_all(query.as_bytes())
+        .context("failed to write Bazel rdeps query file")?;
+    query_file
+        .flush()
+        .context("failed to flush Bazel rdeps query file")?;
 
     let output = Command::new("bazel")
         .arg("query")
@@ -104,14 +122,16 @@ pub fn count_transitive_dependents_by_label(
             "--order_output=full",
         ])
         .current_dir(workspace_root)
-        .output()?;
+        .output()
+        .context("failed to run `bazel query --output=graph`")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("bazel query rdeps failed: {}", stderr.trim()).into());
+        bail!("bazel query rdeps failed: {}", stderr.trim());
     }
 
-    let dot = String::from_utf8(output.stdout)?;
+    let dot = String::from_utf8(output.stdout)
+        .context("bazel query --output=graph produced non-UTF-8 output")?;
     let predecessors = parse_predecessors_from_dot(&dot)?;
     let graph_labels = collect_graph_labels(&predecessors);
     let counts = labels
@@ -128,7 +148,7 @@ pub fn count_transitive_dependents_by_label(
     Ok(counts)
 }
 
-fn parse_predecessors_from_dot(dot: &str) -> Result<HashMap<String, Vec<String>>, Box<dyn Error>> {
+fn parse_predecessors_from_dot(dot: &str) -> Result<HashMap<String, Vec<String>>> {
     use dot_parser::{ast, canonical};
 
     let mut predecessors: HashMap<String, Vec<String>> = HashMap::new();
@@ -137,7 +157,7 @@ fn parse_predecessors_from_dot(dot: &str) -> Result<HashMap<String, Vec<String>>
     }
 
     let ast_graph = ast::Graph::try_from(dot)
-        .map_err(|e| format!("failed to parse bazel --output=graph DOT: {e:?}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to parse bazel --output=graph DOT: {e:?}"))?;
     let graph = canonical::Graph::from(ast_graph);
 
     for edge in graph.edges.set {

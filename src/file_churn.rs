@@ -1,5 +1,5 @@
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
-use std::error::Error;
 use std::path::Path;
 use std::process::Command;
 
@@ -11,10 +11,7 @@ pub struct FileChurn {
 /// Computes file churn (file touch frequency) from `git log --name-status`.
 ///
 /// Deleted files are intentionally excluded from the result.
-pub fn parse_git_log(
-    workspace_root: &Path,
-    since: Option<&str>,
-) -> Result<FileChurn, Box<dyn Error>> {
+pub fn parse_git_log(workspace_root: &Path, since: Option<&str>) -> Result<FileChurn> {
     let mut cmd = Command::new("git");
     cmd.current_dir(workspace_root).args([
         "log",
@@ -28,17 +25,19 @@ pub fn parse_git_log(
     if let Some(s) = since {
         cmd.args(["--since", s]);
     }
-    let output = cmd.output()?;
+    let output = cmd
+        .output()
+        .context("failed to run `git log --name-status`")?;
     if !output.status.success() {
-        return Err(format!(
+        bail!(
             "git log failed (status: {}): {}",
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
-        )
-        .into());
+        );
     }
 
-    let stdout = String::from_utf8(output.stdout)?;
+    let stdout = String::from_utf8(output.stdout)
+        .context("git log --name-status produced non-UTF-8 output")?;
     Ok(parse_name_status_stdout(&stdout))
 }
 

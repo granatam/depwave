@@ -3,9 +3,9 @@ mod file_churn;
 mod files;
 mod report;
 
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::{
-    error::Error,
     io::{self, Write},
     path::PathBuf,
 };
@@ -30,7 +30,7 @@ struct Args {
     limit: Option<usize>,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<()> {
     let Args {
         since,
         workspace,
@@ -40,10 +40,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let workspace = match workspace {
         Some(workspace) => workspace,
-        None => bazel::find_workspace_root()?,
+        None => bazel::find_workspace_root().context("failed to find Bazel workspace root")?,
     };
 
-    let churn_stats = file_churn::parse_git_log(&workspace, since.as_deref())?;
+    let churn_stats = file_churn::parse_git_log(&workspace, since.as_deref())
+        .context("failed to compute git file churn")?;
     if churn_stats.malformed_lines > 0 {
         eprintln!(
             "warning: skipped {} malformed or unknown git --name-status lines",
@@ -52,14 +53,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Filter out non-target files.
-    let labels_by_path = bazel::resolve_paths_to_labels(&workspace, churn_stats.churn.keys())?;
+    let labels_by_path = bazel::resolve_paths_to_labels(&workspace, churn_stats.churn.keys())
+        .context("failed to resolve changed paths to Bazel labels")?;
 
     // Count transitive dependents for each resolved label.
-    let dependent_counts = bazel::count_transitive_dependents_by_label(
-        &workspace,
-        &universe,
-        labels_by_path.values(),
-    )?;
+    let dependent_counts =
+        bazel::count_transitive_dependents_by_label(&workspace, &universe, labels_by_path.values())
+            .context("failed to count targets transitive dependents")?;
 
     let report = report::build_report(
         report::ReportConfig {
@@ -75,8 +75,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
-    serde_json::to_writer_pretty(&mut stdout, &report)?;
-    writeln!(stdout)?;
+    serde_json::to_writer_pretty(&mut stdout, &report).context("failed to write JSON report")?;
+    writeln!(stdout).context("failed to finish writing JSON report")?;
 
     Ok(())
 }
