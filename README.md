@@ -5,7 +5,12 @@ like a **wave**, affecting many targets, tests, and CI jobs.
 
 Depwave is a change-impact analysis CLI tool for Bazel repositories.
 
-It helps identify files and Bazel targets that are risky to change because they combine:
+> [!WARNING]
+> Depwave is under active development. CLI flags, JSON output schema,
+> scoring model, and analysis semantics are likely to change between versions.
+
+It helps identify files and Bazel targets that are risky to change because they
+combine:
 
 - high Git churn
 - many transitive Bazel dependents
