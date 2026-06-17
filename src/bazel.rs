@@ -225,7 +225,7 @@ impl BazelDependencyGraph {
         graph_labels
     }
 
-    fn transitive_dependent_count(&self, label: &str) -> u64 {
+    pub(crate) fn transitive_dependent_count(&self, label: &str) -> u64 {
         let mut visited: HashSet<&str> = HashSet::from([label]);
         let mut queue: VecDeque<&str> = VecDeque::new();
 

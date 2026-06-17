@@ -23,6 +23,15 @@ pub(crate) struct OwnerChurn {
     pub(crate) source_files: Vec<SourceFile>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnerImpact {
+    pub(crate) label: String,
+    pub(crate) churn: u64,
+    pub(crate) source_files: Vec<SourceFile>,
+    pub(crate) transitive_dependents: u64,
+    pub(crate) impact_score: u64,
+}
+
 pub(crate) fn aggregate_owner_churn(
     file_churn: &HashMap<String, u64>,
     labels_by_path: &HashMap<String, String>,
@@ -79,6 +88,26 @@ pub(crate) fn aggregate_owner_churn(
         unresolved_files,
         no_owner_files,
     )
+}
+
+pub(crate) fn build_owner_impacts(
+    owner_churn: Vec<OwnerChurn>,
+    graph: &BazelDependencyGraph,
+) -> Vec<OwnerImpact> {
+    owner_churn
+        .into_iter()
+        .map(|owner| {
+            let churn = owner.churn;
+            let transitive_dependents = graph.transitive_dependent_count(&owner.label);
+            OwnerImpact {
+                label: owner.label,
+                churn,
+                source_files: owner.source_files,
+                transitive_dependents,
+                impact_score: churn.saturating_mul(transitive_dependents),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -227,5 +256,56 @@ mod tests {
         assert_eq!(owners[0].label, "//pkg:lib");
         assert_eq!(owners[0].churn, 4);
         assert_eq!(owners[0].source_files.len(), 1);
+    }
+
+    #[test]
+    fn build_owner_impacts_counts_transitive_dependents_and_scores_owner_churn() {
+        let file_churn = file_churn(&[("pkg/foo.rs", 4), ("pkg/bar.rs", 3)]);
+        let labels_by_path = labels_by_path(&[
+            ("pkg/foo.rs", "//pkg:foo.rs"),
+            ("pkg/bar.rs", "//pkg:bar.rs"),
+        ]);
+        let graph = graph(
+            r#"
+            digraph mygraph {
+              "//pkg:lib" -> "//pkg:foo.rs"
+              "//pkg:lib" -> "//pkg:bar.rs"
+              "//app:bin" -> "//pkg:lib"
+              "//pkg:test" -> "//pkg:lib"
+            }
+        "#,
+        );
+        let (owners, _, _) = aggregate_owner_churn(&file_churn, &labels_by_path, &graph);
+
+        let impacts = build_owner_impacts(owners, &graph);
+
+        assert_eq!(impacts.len(), 1);
+        assert_eq!(impacts[0].label, "//pkg:lib");
+        assert_eq!(impacts[0].churn, 7);
+        assert_eq!(impacts[0].transitive_dependents, 2);
+        assert_eq!(impacts[0].impact_score, 14);
+        assert_eq!(impacts[0].source_files.len(), 2);
+    }
+
+    #[test]
+    fn build_owner_impacts_uses_zero_dependents_when_owner_has_no_dependents() {
+        let owner_churn = vec![OwnerChurn {
+            label: "//pkg:lib".to_string(),
+            churn: 7,
+            source_files: Vec::new(),
+        }];
+        let graph = graph(
+            r#"
+            digraph mygraph {
+              "//pkg:lib" -> "//pkg:foo.rs"
+            }
+        "#,
+        );
+
+        let impacts = build_owner_impacts(owner_churn, &graph);
+
+        assert_eq!(impacts.len(), 1);
+        assert_eq!(impacts[0].transitive_dependents, 0);
+        assert_eq!(impacts[0].impact_score, 0);
     }
 }
