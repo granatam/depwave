@@ -1,6 +1,7 @@
 mod bazel;
 mod file_churn;
 mod files;
+mod owner;
 mod report;
 
 use anyhow::{Context, Result};
