@@ -86,6 +86,35 @@ pub fn count_transitive_dependents_by_label(
     universe: &str,
     labels: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Result<HashMap<String, u64>> {
+    let labels = collect_unique_nonempty_strings(labels);
+
+    if labels.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let graph = query_rdeps_graph(workspace_root, universe, &labels)?;
+    let graph_labels = graph.labels();
+    let counts: HashMap<String, u64> = labels
+        .iter()
+        .map(|label| {
+            let count = if graph_labels.contains(label.as_str()) {
+                graph.transitive_dependent_count(label)
+            } else {
+                0
+            };
+
+            (label.clone(), count)
+        })
+        .collect();
+
+    Ok(counts)
+}
+
+pub(crate) fn query_rdeps_graph(
+    workspace_root: &Path,
+    universe: &str,
+    labels: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<BazelDependencyGraph> {
     let universe = universe.trim();
     if universe.is_empty() {
         bail!("`--universe` value should not be empty");
@@ -94,7 +123,7 @@ pub fn count_transitive_dependents_by_label(
     let labels = collect_unique_nonempty_strings(labels);
 
     if labels.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(BazelDependencyGraph::default());
     }
 
     let query = format!("rdeps({}, set({}))", universe, labels.join(" "));
@@ -134,58 +163,90 @@ pub fn count_transitive_dependents_by_label(
 
     let dot = String::from_utf8(output.stdout)
         .context("bazel query --output=graph produced non-UTF-8 output")?;
-    let predecessors = parse_predecessors_from_dot(&dot)?;
-    let graph_labels = collect_graph_labels(&predecessors);
+    let graph = BazelDependencyGraph::from_dot(&dot)?;
     debug!(
-        graph_nodes = graph_labels.len(),
-        graph_edges = predecessors.values().map(Vec::len).sum::<usize>(),
+        graph_nodes = graph.node_count(),
+        graph_edges = graph.edge_count(),
         "parsed Bazel dependency graph"
     );
-    let counts: HashMap<String, u64> = labels
-        .iter()
-        .map(|label| {
-            let count = if graph_labels.contains(label.as_str()) {
-                count_transitive_dependents_for_label(label.as_str(), &predecessors)
-            } else {
-                0
-            };
 
-            (label.clone(), count)
-        })
-        .collect();
-
-    Ok(counts)
+    Ok(graph)
 }
 
-fn parse_predecessors_from_dot(dot: &str) -> Result<HashMap<String, Vec<String>>> {
-    use dot_parser::{ast, canonical};
-
-    let mut predecessors: HashMap<String, Vec<String>> = HashMap::new();
-    if dot.trim().is_empty() {
-        return Ok(predecessors);
-    }
-
-    let ast_graph = ast::Graph::try_from(dot)
-        .map_err(|e| anyhow::anyhow!("failed to parse bazel --output=graph DOT: {e:?}"))?;
-    let graph = canonical::Graph::from(ast_graph);
-
-    for edge in graph.edges.set {
-        let from = strip_dot_quotes(edge.from.as_str()).to_owned();
-        let to = strip_dot_quotes(edge.to.as_str()).to_owned();
-
-        predecessors.entry(to).or_default().push(from);
-    }
-
-    Ok(predecessors)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct BazelDependencyGraph {
+    predecessors: HashMap<String, Vec<String>>,
 }
 
-fn collect_graph_labels(predecessors: &HashMap<String, Vec<String>>) -> HashSet<&str> {
-    let mut graph_labels = HashSet::new();
-    for (to, froms) in predecessors {
-        graph_labels.insert(to.as_str());
-        graph_labels.extend(froms.iter().map(String::as_str));
+impl BazelDependencyGraph {
+    pub(crate) fn from_dot(dot: &str) -> Result<Self> {
+        use dot_parser::{ast, canonical};
+
+        let mut predecessors: HashMap<String, Vec<String>> = HashMap::new();
+        if dot.trim().is_empty() {
+            return Ok(Self { predecessors });
+        }
+
+        let ast_graph = ast::Graph::try_from(dot)
+            .map_err(|e| anyhow::anyhow!("failed to parse bazel --output=graph DOT: {e:?}"))?;
+        let graph = canonical::Graph::from(ast_graph);
+
+        for edge in graph.edges.set {
+            let from = strip_dot_quotes(edge.from.as_str()).to_owned();
+            let to = strip_dot_quotes(edge.to.as_str()).to_owned();
+
+            predecessors.entry(to).or_default().push(from);
+        }
+
+        Ok(Self { predecessors })
     }
-    graph_labels
+
+    pub(crate) fn direct_predecessors(&self, label: &str) -> &[String] {
+        self.predecessors
+            .get(label)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    fn node_count(&self) -> usize {
+        self.labels().len()
+    }
+
+    fn edge_count(&self) -> usize {
+        self.predecessors.values().map(Vec::len).sum()
+    }
+
+    fn labels(&self) -> HashSet<&str> {
+        let mut graph_labels = HashSet::new();
+        for (to, froms) in &self.predecessors {
+            graph_labels.insert(to.as_str());
+            graph_labels.extend(froms.iter().map(String::as_str));
+        }
+        graph_labels
+    }
+
+    fn transitive_dependent_count(&self, label: &str) -> u64 {
+        let mut visited: HashSet<&str> = HashSet::from([label]);
+        let mut queue: VecDeque<&str> = VecDeque::new();
+
+        for pred in self.direct_predecessors(label).iter().map(String::as_str) {
+            if visited.insert(pred) {
+                queue.push_back(pred);
+            }
+        }
+
+        while let Some(node) = queue.pop_front() {
+            for pred in self.direct_predecessors(node).iter().map(String::as_str) {
+                if visited.insert(pred) {
+                    queue.push_back(pred);
+                }
+            }
+        }
+
+        u64::try_from(visited.len())
+            .unwrap_or(u64::MAX)
+            .saturating_sub(1)
+    }
 }
 
 fn collect_unique_nonempty_strings(
@@ -198,36 +259,6 @@ fn collect_unique_nonempty_strings(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
-}
-
-fn count_transitive_dependents_for_label<'a>(
-    label: &'a str,
-    predecessors: &'a HashMap<String, Vec<String>>,
-) -> u64 {
-    let mut visited: HashSet<&str> = HashSet::from([label]);
-    let mut queue: VecDeque<&str> = VecDeque::new();
-
-    if let Some(preds) = predecessors.get(label) {
-        for pred in preds.iter().map(String::as_str) {
-            if visited.insert(pred) {
-                queue.push_back(pred);
-            }
-        }
-    }
-
-    while let Some(node) = queue.pop_front() {
-        if let Some(preds) = predecessors.get(node) {
-            for pred in preds.iter().map(String::as_str) {
-                if visited.insert(pred) {
-                    queue.push_back(pred);
-                }
-            }
-        }
-    }
-
-    u64::try_from(visited.len())
-        .unwrap_or(u64::MAX)
-        .saturating_sub(1)
 }
 
 /// Strips a single layer of surrounding double-quote characters from a DOT node identifier string.
@@ -284,15 +315,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_predecessors_from_dot_returns_empty_map_for_empty_dot() {
-        let predecessors = parse_predecessors_from_dot("").unwrap();
+    fn bazel_dependency_graph_from_dot_returns_empty_graph_for_empty_dot() {
+        let graph = BazelDependencyGraph::from_dot("").unwrap();
 
-        assert!(predecessors.is_empty());
+        assert_eq!(graph.node_count(), 0);
+        assert_eq!(graph.edge_count(), 0);
     }
 
     #[test]
-    fn parse_predecessors_from_dot_returns_error_for_invalid_dot() {
-        let err = parse_predecessors_from_dot("not dot").unwrap_err();
+    fn bazel_dependency_graph_from_dot_returns_error_for_invalid_dot() {
+        let err = BazelDependencyGraph::from_dot("not dot").unwrap_err();
 
         assert!(
             err.to_string()
@@ -302,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_predecessors_from_dot_parses_unfactored_graph() {
+    fn bazel_dependency_graph_from_dot_parses_unfactored_graph() {
         let dot = r#"
             digraph mygraph {
               "//app:bin" -> "//lib:core"
@@ -311,30 +343,30 @@ mod tests {
             }
         "#;
 
-        let predecessors = parse_predecessors_from_dot(dot).unwrap();
+        let graph = BazelDependencyGraph::from_dot(dot).unwrap();
 
         assert_eq!(
-            sorted(predecessors.get("//lib:core").unwrap().clone()),
+            sorted(graph.direct_predecessors("//lib:core").to_vec()),
             sorted(strings(&["//app:bin", "//test:unit"]))
         );
 
         assert_eq!(
-            predecessors.get("//base:base").unwrap(),
-            &strings(&["//lib:core"])
+            graph.direct_predecessors("//base:base"),
+            strings(&["//lib:core"]).as_slice()
         );
     }
 
     #[test]
-    fn parse_predecessors_from_dot_keeps_factored_source_node_as_single_node() {
+    fn bazel_dependency_graph_from_dot_keeps_factored_source_node_as_single_node() {
         let dot = r#"
             digraph mygraph {
               "//app:bin\n//test:unit" -> "//lib:core"
             }
         "#;
 
-        let predecessors = parse_predecessors_from_dot(dot).unwrap();
+        let graph = BazelDependencyGraph::from_dot(dot).unwrap();
 
-        let froms = predecessors.get("//lib:core").unwrap();
+        let froms = graph.direct_predecessors("//lib:core");
 
         assert_eq!(froms.len(), 1);
 
@@ -352,18 +384,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_predecessors_from_dot_keeps_factored_destination_node_as_single_node() {
+    fn bazel_dependency_graph_from_dot_keeps_factored_destination_node_as_single_node() {
         let dot = r#"
             digraph mygraph {
               "//app:bin" -> "//lib:core\n//lib:util"
             }
         "#;
 
-        let predecessors = parse_predecessors_from_dot(dot).unwrap();
+        let graph = BazelDependencyGraph::from_dot(dot).unwrap();
 
-        assert_eq!(predecessors.len(), 1);
+        assert_eq!(graph.predecessors.len(), 1);
 
-        let factored_destination = predecessors.keys().next().unwrap();
+        let factored_destination = graph.predecessors.keys().next().unwrap();
 
         assert!(
             factored_destination.contains("//lib:core"),
@@ -376,64 +408,65 @@ mod tests {
         );
 
         assert_eq!(
-            predecessors.get(factored_destination).unwrap(),
-            &strings(&["//app:bin"])
+            graph.direct_predecessors(factored_destination),
+            strings(&["//app:bin"]).as_slice()
         );
     }
 
     #[test]
-    fn count_transitive_dependents_for_label_walks_predecessors() {
-        let predecessors = HashMap::from([
-            (
-                "//lib:core".to_string(),
-                strings(&["//app:bin", "//test:unit"]),
-            ),
-            ("//base:base".to_string(), strings(&["//lib:core"])),
-        ]);
+    fn transitive_dependent_count_walks_predecessors() {
+        let graph = BazelDependencyGraph {
+            predecessors: HashMap::from([
+                (
+                    "//lib:core".to_string(),
+                    strings(&["//app:bin", "//test:unit"]),
+                ),
+                ("//base:base".to_string(), strings(&["//lib:core"])),
+            ]),
+        };
 
-        assert_eq!(
-            count_transitive_dependents_for_label("//base:base", &predecessors),
-            3
-        );
-        assert_eq!(
-            count_transitive_dependents_for_label("//lib:core", &predecessors),
-            2
-        );
-        assert_eq!(
-            count_transitive_dependents_for_label("//app:bin", &predecessors),
-            0
-        );
+        assert_eq!(graph.transitive_dependent_count("//base:base"), 3);
+        assert_eq!(graph.transitive_dependent_count("//lib:core"), 2);
+        assert_eq!(graph.transitive_dependent_count("//app:bin"), 0);
     }
 
     #[test]
-    fn count_transitive_dependents_for_label_handles_cycles_without_infinite_loop() {
-        let predecessors = HashMap::from([
-            ("//a:a".to_string(), strings(&["//b:b"])),
-            ("//b:b".to_string(), strings(&["//a:a", "//c:c"])),
-        ]);
+    fn transitive_dependent_count_handles_cycles_without_infinite_loop() {
+        let graph = BazelDependencyGraph {
+            predecessors: HashMap::from([
+                ("//a:a".to_string(), strings(&["//b:b"])),
+                ("//b:b".to_string(), strings(&["//a:a", "//c:c"])),
+            ]),
+        };
 
-        assert_eq!(
-            count_transitive_dependents_for_label("//a:a", &predecessors),
-            2
-        );
+        assert_eq!(graph.transitive_dependent_count("//a:a"), 2);
     }
 
     #[test]
-    fn collect_graph_labels_includes_sources_and_destinations() {
-        let predecessors = HashMap::from([
-            (
-                "//lib:core".to_string(),
-                strings(&["//app:bin", "//test:unit"]),
-            ),
-            ("//base:base".to_string(), strings(&["//lib:core"])),
-        ]);
+    fn graph_labels_include_sources_and_destinations() {
+        let graph = BazelDependencyGraph {
+            predecessors: HashMap::from([
+                (
+                    "//lib:core".to_string(),
+                    strings(&["//app:bin", "//test:unit"]),
+                ),
+                ("//base:base".to_string(), strings(&["//lib:core"])),
+            ]),
+        };
 
-        let graph_labels = collect_graph_labels(&predecessors);
+        let graph_labels = graph.labels();
 
         assert!(graph_labels.contains("//app:bin"));
         assert!(graph_labels.contains("//test:unit"));
         assert!(graph_labels.contains("//lib:core"));
         assert!(graph_labels.contains("//base:base"));
+    }
+
+    #[test]
+    fn direct_predecessors_returns_empty_slice_for_absent_label() {
+        let graph = BazelDependencyGraph::default();
+
+        assert!(graph.direct_predecessors("//missing:target").is_empty());
     }
 
     #[test]
@@ -445,8 +478,8 @@ mod tests {
             }
         "#;
 
-        let predecessors = parse_predecessors_from_dot(dot).unwrap();
-        let graph_labels = collect_graph_labels(&predecessors);
+        let graph = BazelDependencyGraph::from_dot(dot).unwrap();
+        let graph_labels = graph.labels();
 
         assert!(!graph_labels.contains("//app:bin"));
         assert!(!graph_labels.contains("//test:unit"));
@@ -454,22 +487,10 @@ mod tests {
         assert!(graph_labels.contains("//lib:core"));
         assert!(graph_labels.contains("//base:base"));
 
-        assert_eq!(
-            count_transitive_dependents_for_label("//base:base", &predecessors),
-            2
-        );
-        assert_eq!(
-            count_transitive_dependents_for_label("//lib:core", &predecessors),
-            1
-        );
-        assert_eq!(
-            count_transitive_dependents_for_label("//app:bin", &predecessors),
-            0
-        );
-        assert_eq!(
-            count_transitive_dependents_for_label("//test:unit", &predecessors),
-            0
-        );
+        assert_eq!(graph.transitive_dependent_count("//base:base"), 2);
+        assert_eq!(graph.transitive_dependent_count("//lib:core"), 1);
+        assert_eq!(graph.transitive_dependent_count("//app:bin"), 0);
+        assert_eq!(graph.transitive_dependent_count("//test:unit"), 0);
     }
 
     #[test]
