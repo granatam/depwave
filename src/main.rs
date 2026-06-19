@@ -7,6 +7,7 @@ mod report;
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::{
+    collections::HashMap,
     io::{self, Write},
     path::PathBuf,
     time::Instant,
@@ -73,31 +74,41 @@ fn main() -> Result<()> {
         );
     }
 
-    // Filter out non-target files.
+    let source_churn: HashMap<String, u64> = churn_stats
+        .churn
+        .iter()
+        .filter(|(path, _)| files::classify_file(path) == files::FileKind::Source)
+        .map(|(path, churn)| (path.clone(), *churn))
+        .collect();
+
     let started = Instant::now();
-    let labels_by_path = bazel::resolve_paths_to_labels(&workspace, churn_stats.churn.keys())
+    let labels_by_path = bazel::resolve_paths_to_labels(&workspace, source_churn.keys())
         .context("failed to resolve changed paths to Bazel labels")?;
     info!(
-        churned_files = churn_stats.churn.len(),
+        source_files = source_churn.len(),
         resolved_labels = labels_by_path.len(),
         elapsed_ms = started.elapsed().as_millis(),
-        "resolved changed paths"
+        "resolved changed source paths"
     );
 
-    // Count transitive dependents for each resolved label.
     let started = Instant::now();
-    let dependent_counts =
-        bazel::count_transitive_dependents_by_label(&workspace, &universe, labels_by_path.values())
-            .context("failed to count target transitive dependents")?;
-    let zero_dependent_targets = dependent_counts
-        .values()
-        .filter(|&&dependent_count| dependent_count == 0)
+    let graph = bazel::query_rdeps_graph(&workspace, &universe, labels_by_path.values())
+        .context("failed to query Bazel reverse dependency graph")?;
+    let (owner_churn, unresolved_source_files, no_owner_source_files) =
+        owner::aggregate_owner_churn(&source_churn, &labels_by_path, &graph);
+    let owner_impacts = owner::build_owner_impacts(owner_churn, &graph);
+    let zero_dependent_targets = owner_impacts
+        .iter()
+        .filter(|impact| impact.transitive_dependents == 0)
         .count();
     info!(
-        input_target_labels = labels_by_path.len(),
+        input_file_labels = labels_by_path.len(),
+        owner_targets = owner_impacts.len(),
         zero_dependent_targets,
+        unresolved_source_files = unresolved_source_files.len(),
+        no_owner_source_files = no_owner_source_files.len(),
         elapsed_ms = started.elapsed().as_millis(),
-        "counted target transitive dependents"
+        "computed owner target impact"
     );
 
     let report = report::build_report(
@@ -108,8 +119,9 @@ fn main() -> Result<()> {
             limit,
         },
         &churn_stats,
-        &labels_by_path,
-        &dependent_counts,
+        owner_impacts,
+        unresolved_source_files,
+        no_owner_source_files,
     );
 
     let stdout = io::stdout();

@@ -9,22 +9,22 @@ Depwave is a change-impact analysis CLI tool for Bazel repositories.
 > Depwave is under active development. CLI flags, JSON output schema,
 > scoring model, and analysis semantics are likely to change between versions.
 
-It helps identify files and Bazel targets that are risky to change because they
+It helps identify Bazel targets affected by changed source files because they
 combine:
 
-- high Git churn
+- high Git churn across owned source files
 - many transitive Bazel dependents
 
 The current scoring model is intentionally simple:
 
 ```text
-impact_score = churn * transitive_dependents
+impact_score = sources_churn_sum * transitive_dependents
 ```
 
 Depwave can help answer questions like:
 
 - Which targets are depended on by many other targets?
-- Which high-churn files are likely to cause large CI/build impact?
+- Which high-churn source files explain that target impact?
 
 ## Usage
 
@@ -41,36 +41,73 @@ at version 8.5.1, using `//src/main/...` as the analysis universe.
 
 ```bash
 $ depwave --since 2024-06-14 --universe //src/main/... --limit 2
-bazel query --output=location: some changed files could not be resolved as Bazel targets
+...  WARN depwave::bazel: bazel query --output=location returned partial results status=exit status: 3
 
 {
   "workspace": "<path_to_workspace>/bazel",
   "universe": "//src/main/...",
   "since": "2024-06-14",
-  "total_churned_files": 2799,
-  "analyzed_files": 2420,
-  "unresolved_files": 10,
-  "unsupported_files": 369,
+  "total_churned_files": 2798,
+  "analyzed_targets": 718,
+  "unresolved_source_files_count": 10,
+  "no_owner_source_files_count": 939,
+  "unsupported_files_count": 369,
   "malformed_git_lines": 0,
   "entries": [
     {
-      "source_path": "src/main/java/com/google/devtools/build/lib/packages/Package.java",
-      "kind": "source",
-      "status": "analyzed",
-      "target_label": "//src/main/java/com/google/devtools/build/lib/packages:Package.java",
-      "churn": 40,
-      "dependents": 535,
-      "impact_score": 21400
+      "target_label": "//src/main/java/com/google/devtools/build/lib/packages:packages",
+      "churn": 254,
+      "transitive_dependents": 532,
+      "impact_score": 135128,
+      "source_files": [
+        {
+          "path": "src/main/java/com/google/devtools/build/lib/packages/AbstractAttributeMapper.java",
+          "file_label": "//src/main/java/com/google/devtools/build/lib/packages:AbstractAttributeMapper.java",
+          "churn": 2
+        },
+        {
+          "path": "src/main/java/com/google/devtools/build/lib/packages/AggregatingAttributeMapper.java",
+          "file_label": "//src/main/java/com/google/devtools/build/lib/packages:AggregatingAttributeMapper.java",
+          "churn": 3
+        },
+        ...
+      ]
     },
     {
-      "source_path": "src/main/java/com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java",
-      "kind": "source",
-      "status": "analyzed",
-      "target_label": "//src/main/java/com/google/devtools/build/lib/packages/semantics:BuildLanguageOptions.java",
-      "churn": 33,
-      "dependents": 641,
-      "impact_score": 21153
+      "target_label": "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:serialization",
+      "churn": 65,
+      "transitive_dependents": 701,
+      "impact_score": 45565,
+      "source_files": [
+        {
+          "path": "src/main/java/com/google/devtools/build/lib/skyframe/serialization/ArrayProcessor.java",
+          "file_label": "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:ArrayProcessor.java",
+          "churn": 1
+        },
+        {
+          "path": "src/main/java/com/google/devtools/build/lib/skyframe/serialization/AsyncDeserializationContext.java",
+          "file_label": "//src/main/java/com/google/devtools/build/lib/skyframe/serialization:AsyncDeserializationContext.java",
+          "churn": 1
+        },
+        ...
+      ]
     }
+  ],
+  "unresolved_source_files": [
+    {
+      "path": ".gitattributes",
+      "churn": 3
+    },
+    ...
+  ],
+  "no_owner_source_files": [
+    ...
+    {
+      "path": ".bazelrc",
+      "file_label": "//:.bazelrc",
+      "churn": 10
+    },
+    ...
   ]
 }
 ```
@@ -81,9 +118,11 @@ Depwave classifies changed files into source files, BUILD files, .bzl files,
 and workspace/module files.
 
 Currently:
-- source files resolved through Bazel are analyzed
+- source files resolved through Bazel are mapped to direct owner targets
+- report entries are owner targets, with source files kept as evidence
 - source-like files that cannot be resolved through Bazel are reported as
   unresolved
+- source files with no direct owner target are reported separately
 - BUILD, .bzl, WORKSPACE, and MODULE.bazel files are detected but reported as
   unsupported
 

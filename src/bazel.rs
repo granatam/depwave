@@ -80,36 +80,6 @@ pub fn resolve_paths_to_labels(
     Ok(labels_by_path)
 }
 
-/// Counts transitive dependents of each label via a single `bazel query` call.
-pub fn count_transitive_dependents_by_label(
-    workspace_root: &Path,
-    universe: &str,
-    labels: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<HashMap<String, u64>> {
-    let labels = collect_unique_nonempty_strings(labels);
-
-    if labels.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let graph = query_rdeps_graph(workspace_root, universe, &labels)?;
-    let graph_labels = graph.labels();
-    let counts: HashMap<String, u64> = labels
-        .iter()
-        .map(|label| {
-            let count = if graph_labels.contains(label.as_str()) {
-                graph.transitive_dependent_count(label)
-            } else {
-                0
-            };
-
-            (label.clone(), count)
-        })
-        .collect();
-
-    Ok(counts)
-}
-
 pub(crate) fn query_rdeps_graph(
     workspace_root: &Path,
     universe: &str,

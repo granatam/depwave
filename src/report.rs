@@ -1,8 +1,8 @@
 use crate::file_churn::FileChurn;
-use crate::files::{AnalysisStatus, FileKind, classify_file};
+use crate::files::{FileKind, classify_file};
+use crate::owner::{OwnerImpact, SourceFile, UnresolvedSourceFile};
 
 use serde::Serialize;
-use std::collections::HashMap;
 
 pub struct ReportConfig {
     pub workspace: String,
@@ -17,48 +17,73 @@ pub struct Report {
     universe: String,
     since: Option<String>,
     total_churned_files: u64,
-    analyzed_files: u64,
-    unresolved_files: u64,
-    unsupported_files: u64,
+    analyzed_targets: u64,
+    unresolved_source_files_count: u64,
+    no_owner_source_files_count: u64,
+    unsupported_files_count: u64,
     malformed_git_lines: u64,
     entries: Vec<TargetImpact>,
+    unresolved_source_files: Vec<UnresolvedSourceFileEntry>,
+    no_owner_source_files: Vec<SourceFileEntry>,
+    unsupported_files: Vec<UnsupportedFileEntry>,
 }
 
 #[derive(Debug, Serialize)]
 struct TargetImpact {
-    source_path: String,
-    kind: FileKind,
-    status: AnalysisStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    target_label: Option<String>,
+    target_label: String,
     churn: u64,
-    dependents: u64,
+    transitive_dependents: u64,
     impact_score: u64,
+    source_files: Vec<SourceFileEntry>,
 }
 
 impl TargetImpact {
     fn cmp_by_impact(a: &Self, b: &Self) -> std::cmp::Ordering {
         b.impact_score
             .cmp(&a.impact_score)
-            .then_with(|| b.dependents.cmp(&a.dependents))
+            .then_with(|| b.transitive_dependents.cmp(&a.transitive_dependents))
             .then_with(|| b.churn.cmp(&a.churn))
-            .then_with(|| a.source_path.cmp(&b.source_path))
             .then_with(|| a.target_label.cmp(&b.target_label))
     }
+}
+
+#[derive(Debug, Serialize)]
+struct SourceFileEntry {
+    path: String,
+    file_label: String,
+    churn: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct UnresolvedSourceFileEntry {
+    path: String,
+    churn: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct UnsupportedFileEntry {
+    path: String,
+    kind: FileKind,
+    churn: u64,
 }
 
 pub fn build_report(
     config: ReportConfig,
     file_churn: &FileChurn,
-    path_to_label: &HashMap<String, String>,
-    dependents: &HashMap<String, u64>,
+    owner_impacts: Vec<OwnerImpact>,
+    unresolved_source_files: Vec<UnresolvedSourceFile>,
+    no_owner_source_files: Vec<SourceFile>,
 ) -> Report {
-    let mut entries = build_report_entries(file_churn, path_to_label, dependents);
+    let mut entries = build_target_entries(owner_impacts);
+    let unresolved_source_files = build_unresolved_source_file_entries(unresolved_source_files);
+    let no_owner_source_files = build_source_file_entries(no_owner_source_files);
+    let unsupported_files = build_unsupported_file_entries(file_churn);
 
     let total_churned_files = file_churn.churn.len() as u64;
-    let analyzed_files = count_status(&entries, AnalysisStatus::Analyzed);
-    let unresolved_files = count_status(&entries, AnalysisStatus::Unresolved);
-    let unsupported_files = count_status(&entries, AnalysisStatus::Unsupported);
+    let analyzed_targets = entries.len() as u64;
+    let unresolved_source_files_count = unresolved_source_files.len() as u64;
+    let no_owner_source_files_count = no_owner_source_files.len() as u64;
+    let unsupported_files_count = unsupported_files.len() as u64;
 
     if let Some(limit) = config.limit {
         entries.truncate(limit);
@@ -68,24 +93,29 @@ pub fn build_report(
         workspace: config.workspace,
         universe: config.universe,
         since: config.since,
-        malformed_git_lines: file_churn.malformed_lines,
         total_churned_files,
-        analyzed_files,
-        unresolved_files,
-        unsupported_files,
+        analyzed_targets,
+        unresolved_source_files_count,
+        no_owner_source_files_count,
+        unsupported_files_count,
+        malformed_git_lines: file_churn.malformed_lines,
         entries,
+        unresolved_source_files,
+        no_owner_source_files,
+        unsupported_files,
     }
 }
 
-fn build_report_entries(
-    file_churn: &FileChurn,
-    path_to_label: &HashMap<String, String>,
-    dependents: &HashMap<String, u64>,
-) -> Vec<TargetImpact> {
-    let mut entries: Vec<_> = file_churn
-        .churn
-        .iter()
-        .map(|(path, churn)| build_entry(path, *churn, path_to_label, dependents))
+fn build_target_entries(owner_impacts: Vec<OwnerImpact>) -> Vec<TargetImpact> {
+    let mut entries: Vec<_> = owner_impacts
+        .into_iter()
+        .map(|impact| TargetImpact {
+            target_label: impact.label,
+            churn: impact.churn,
+            transitive_dependents: impact.transitive_dependents,
+            impact_score: impact.impact_score,
+            source_files: build_source_file_entries(impact.source_files),
+        })
         .collect();
 
     entries.sort_by(TargetImpact::cmp_by_impact);
@@ -93,61 +123,50 @@ fn build_report_entries(
     entries
 }
 
-fn build_entry(
-    path: &str,
-    churn: u64,
-    path_to_label: &HashMap<String, String>,
-    dependents: &HashMap<String, u64>,
-) -> TargetImpact {
-    let kind = classify_file(path);
-    match kind {
-        FileKind::Source => {
-            if let Some(label) = path_to_label.get(path) {
-                let dependents = dependents.get(label.as_str()).copied().unwrap_or(0);
-                TargetImpact {
-                    source_path: path.to_string(),
-                    kind,
-                    status: AnalysisStatus::Analyzed,
-                    target_label: Some(label.clone()),
-                    churn,
-                    dependents,
-                    impact_score: churn.saturating_mul(dependents),
-                }
-            } else {
-                TargetImpact {
-                    source_path: path.to_string(),
-                    kind,
-                    status: AnalysisStatus::Unresolved,
-                    target_label: None,
-                    churn,
-                    dependents: 0,
-                    impact_score: 0,
-                }
-            }
-        }
-        FileKind::BuildFile => unsupported_entry(path, kind, churn),
-        FileKind::BzlFile => unsupported_entry(path, kind, churn),
-        FileKind::WorkspaceFile => unsupported_entry(path, kind, churn),
-    }
+fn build_source_file_entries(source_files: Vec<SourceFile>) -> Vec<SourceFileEntry> {
+    source_files
+        .into_iter()
+        .map(|source_file| SourceFileEntry {
+            path: source_file.path,
+            file_label: source_file.file_label,
+            churn: source_file.churn,
+        })
+        .collect()
 }
 
-fn unsupported_entry(path: &str, kind: FileKind, churn: u64) -> TargetImpact {
-    TargetImpact {
-        source_path: path.to_string(),
-        kind,
-        status: AnalysisStatus::Unsupported,
-        target_label: None,
-        churn,
-        dependents: 0,
-        impact_score: 0,
-    }
+fn build_unresolved_source_file_entries(
+    source_files: Vec<UnresolvedSourceFile>,
+) -> Vec<UnresolvedSourceFileEntry> {
+    source_files
+        .into_iter()
+        .map(|source_file| UnresolvedSourceFileEntry {
+            path: source_file.path,
+            churn: source_file.churn,
+        })
+        .collect()
 }
 
-fn count_status(entries: &[TargetImpact], status: AnalysisStatus) -> u64 {
-    entries
+fn build_unsupported_file_entries(file_churn: &FileChurn) -> Vec<UnsupportedFileEntry> {
+    let mut entries: Vec<_> = file_churn
+        .churn
         .iter()
-        .filter(|entry| entry.status == status)
-        .count() as u64
+        .filter_map(|(path, churn)| {
+            let kind = classify_file(path);
+            if kind == FileKind::Source {
+                None
+            } else {
+                Some(UnsupportedFileEntry {
+                    path: path.clone(),
+                    kind,
+                    churn: *churn,
+                })
+            }
+        })
+        .collect();
+
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+    entries
 }
 
 #[cfg(test)]
@@ -155,48 +174,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builds_entries_for_analyzed_unresolved_and_unsupported_files() {
+    fn builds_owner_first_report_with_explicit_file_buckets() {
         let file_churn = FileChurn {
-            churn: HashMap::from([
-                ("src/lib.rs".to_string(), 3),
-                ("README.md".to_string(), 2),
-                ("src/BUILD.bazel".to_string(), 4),
-                ("tools/defs.bzl".to_string(), 5),
-                ("MODULE.bazel".to_string(), 1),
+            churn: std::collections::HashMap::from([
+                ("src/foo.rs".to_string(), 4),
+                ("src/bar.rs".to_string(), 3),
+                ("src/missing.rs".to_string(), 2),
+                ("src/orphan.rs".to_string(), 1),
+                ("src/BUILD.bazel".to_string(), 5),
             ]),
-            malformed_lines: 0,
+            malformed_lines: 1,
         };
+        let owner_impacts = vec![OwnerImpact {
+            label: "//src:lib".to_string(),
+            churn: 7,
+            source_files: vec![
+                SourceFile {
+                    path: "src/foo.rs".to_string(),
+                    file_label: "//src:foo.rs".to_string(),
+                    churn: 4,
+                },
+                SourceFile {
+                    path: "src/bar.rs".to_string(),
+                    file_label: "//src:bar.rs".to_string(),
+                    churn: 3,
+                },
+            ],
+            transitive_dependents: 10,
+            impact_score: 70,
+        }];
+        let unresolved_source_files = vec![UnresolvedSourceFile {
+            path: "src/missing.rs".to_string(),
+            churn: 2,
+        }];
+        let no_owner_source_files = vec![SourceFile {
+            path: "src/orphan.rs".to_string(),
+            file_label: "//src:orphan.rs".to_string(),
+            churn: 1,
+        }];
 
-        let path_to_label = HashMap::from([("src/lib.rs".to_string(), "//src:lib.rs".to_string())]);
+        let report = build_report(
+            ReportConfig {
+                workspace: "/repo".to_string(),
+                universe: "//...".to_string(),
+                since: None,
+                limit: None,
+            },
+            &file_churn,
+            owner_impacts,
+            unresolved_source_files,
+            no_owner_source_files,
+        );
 
-        let dependents = HashMap::from([("//src:lib.rs".to_string(), 10)]);
-
-        let entries = build_report_entries(&file_churn, &path_to_label, &dependents);
-
-        assert_eq!(count_status(&entries, AnalysisStatus::Analyzed), 1);
-        assert_eq!(count_status(&entries, AnalysisStatus::Unresolved), 1);
-        assert_eq!(count_status(&entries, AnalysisStatus::Unsupported), 3);
-
-        let analyzed = entries
-            .iter()
-            .find(|entry| entry.source_path == "src/lib.rs")
-            .unwrap();
-
-        assert_eq!(analyzed.status, AnalysisStatus::Analyzed);
-        assert_eq!(analyzed.kind, FileKind::Source);
-        assert_eq!(analyzed.target_label.as_deref(), Some("//src:lib.rs"));
-        assert_eq!(analyzed.churn, 3);
-        assert_eq!(analyzed.dependents, 10);
-        assert_eq!(analyzed.impact_score, 30);
-
-        let build_file = entries
-            .iter()
-            .find(|entry| entry.source_path == "src/BUILD.bazel")
-            .unwrap();
-
-        assert_eq!(build_file.kind, FileKind::BuildFile);
-        assert_eq!(build_file.status, AnalysisStatus::Unsupported);
-        assert_eq!(build_file.target_label, None);
-        assert_eq!(build_file.impact_score, 0);
+        assert_eq!(report.total_churned_files, 5);
+        assert_eq!(report.analyzed_targets, 1);
+        assert_eq!(report.unresolved_source_files_count, 1);
+        assert_eq!(report.no_owner_source_files_count, 1);
+        assert_eq!(report.unsupported_files_count, 1);
+        assert_eq!(report.malformed_git_lines, 1);
+        assert_eq!(report.entries[0].target_label, "//src:lib");
+        assert_eq!(report.entries[0].churn, 7);
+        assert_eq!(report.entries[0].transitive_dependents, 10);
+        assert_eq!(report.entries[0].impact_score, 70);
+        assert_eq!(report.entries[0].source_files.len(), 2);
+        assert_eq!(report.unresolved_source_files[0].path, "src/missing.rs");
+        assert_eq!(report.no_owner_source_files[0].path, "src/orphan.rs");
+        assert_eq!(report.unsupported_files[0].path, "src/BUILD.bazel");
     }
 }

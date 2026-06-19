@@ -10,14 +10,6 @@ pub enum FileKind {
     WorkspaceFile,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AnalysisStatus {
-    Analyzed,
-    Unresolved,
-    Unsupported,
-}
-
 pub fn classify_file(path: &str) -> FileKind {
     let file_name = Path::new(path)
         .file_name()
