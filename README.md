@@ -34,6 +34,9 @@ depwave --workspace . --universe //... --since 2024-01-01 --limit 20
 
 Depwave currently writes the report in JSON format to stdout.
 
+For interpreting report fields and choosing follow-up actions, see
+[`docs/understanding-metrics.md`](docs/understanding-metrics.md).
+
 ## Usage example
 
 The following example was generated on the [Bazel repository](https://github.com/bazelbuild/bazel)
